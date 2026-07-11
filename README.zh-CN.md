@@ -6,6 +6,8 @@
 
 Shadow Coach 是一个本地优先的 macOS 英语跟读与复述训练工具。用户先隐藏文本听原声，再凭记忆复述、录音和分析。macOS 是主程序，iPhone 是可导入 Mac 资料包的随身练习端。
 
+![Shadow Coach 练习流程](docs/shadow-coach-demo.gif)
+
 ## 核心流程
 
 1. 导入字幕、音频/视频加字幕，或支持的网站链接。
@@ -59,6 +61,8 @@ open ios/ShadowCoachMobile.xcodeproj
 ```
 
 详细安装请看 [docs/setup.md](docs/setup.md)。个人 Library、下载媒体、录音、分析结果、模型和 API 配置都不会进入源码仓库。
+
+各项本地工具如何分发请看 [docs/dependencies.md](docs/dependencies.md)。
 
 ## 参与贡献
 

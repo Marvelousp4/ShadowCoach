@@ -1,7 +1,7 @@
 # Release Checklist
 
 1. Rotate any credential that has appeared in a chat, log, screenshot, or test bundle.
-2. Run `./scripts/doctor.sh`, `swift test`, and `swift build -c release`.
+2. Run `./scripts/doctor.sh`, `./scripts/release-doctor.sh`, `swift test`, and `swift build -c release`.
 3. Confirm `git status --ignored` contains no personal media, recordings, bundles, provider config, or models in tracked files.
 4. Update `CHANGELOG.md` and the app version.
 5. Build with `SHADOW_COACH_SIGN_IDENTITY` set to a Developer ID Application identity.

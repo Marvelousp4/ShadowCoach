@@ -6,6 +6,8 @@
 
 Shadow Coach is a local-first macOS and iPhone practice app. Listen without seeing the text, repeat from memory, record yourself, and compare your speech with the original. Most library, audio, history, and analysis data stays on your device.
 
+![Shadow Coach practice flow](docs/shadow-coach-demo.gif)
+
 > Status: early open-source preview. macOS is the primary app; iPhone is a companion that imports `.shadowcoachbundle` libraries exported from the Mac.
 
 ## Why It Is Different
@@ -101,6 +103,8 @@ Set your own development team in Xcode. Personal libraries, recordings, provider
 | Phrase translation | Azure Translator, with fallback | No | Provider |
 
 Run `./scripts/doctor.sh` to see what is available on your machine. See [setup details](docs/setup.md) for optional installation and configuration.
+
+See [Dependency distribution](docs/dependencies.md) for what should be linked, downloaded on demand, installed with Homebrew, or kept optional.
 
 ## Data and Privacy
 
