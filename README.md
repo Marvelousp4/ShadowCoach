@@ -62,7 +62,7 @@ The core listen, record, playback, library, TTS, and local history workflow work
 Requirements: macOS 13+, Xcode Command Line Tools, and Homebrew for optional media tools.
 
 ```bash
-git clone https://github.com/YOUR_ACCOUNT/ShadowCoach.git
+git clone https://github.com/Marvelousp4/ShadowCoach.git
 cd ShadowCoach
 ./scripts/bootstrap.sh
 swift run ShadowCoach

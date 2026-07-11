@@ -40,7 +40,7 @@ Shadow Coach 是一个本地优先的 macOS 英语跟读与复述训练工具。
 ## 开发者启动
 
 ```bash
-git clone https://github.com/YOUR_ACCOUNT/ShadowCoach.git
+git clone https://github.com/Marvelousp4/ShadowCoach.git
 cd ShadowCoach
 ./scripts/bootstrap.sh
 swift run ShadowCoach
