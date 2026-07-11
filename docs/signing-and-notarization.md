@@ -2,6 +2,18 @@
 
 Public macOS distribution outside the App Store requires a Developer ID Application certificate and Apple notarization for a normal Gatekeeper experience.
 
+## Enrollment troubleshooting
+
+If `developer.apple.com/enroll/error` shows “We are unable to process your request”:
+
+1. Confirm the Apple Account has two-factor authentication enabled and its legal name, birthday, phone number, billing address, and country/region are complete and consistent.
+2. Disable VPN or unusual proxy routing, sign out of the Developer site, then retry in a private Safari window.
+3. Prefer enrollment through the official Apple Developer app on iPhone, iPad, or Mac. It supports identity verification and payment in one flow.
+4. Do not create a second developer identity to work around the error.
+5. If the error remains, contact Apple Developer Support and attach the error screenshot, approximate timestamp, country/region, and the Apple Account email. Do not send passwords or verification codes.
+
+Enrollment must be approved before a Developer ID Application certificate can be created.
+
 ## 1. Create the certificate
 
 1. Join the Apple Developer Program with the Apple account that owns the app.

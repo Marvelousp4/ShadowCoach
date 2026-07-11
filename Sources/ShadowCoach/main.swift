@@ -3215,9 +3215,10 @@ enum URLMediaImporter {
     }
 
     private static func runYTDLP(_ arguments: [String]) throws -> String {
-        try CommandRunner.run(
-            executable: "/usr/bin/env",
-            arguments: ["yt-dlp"] + arguments,
+        let command = LocalToolLocator.command(named: "yt-dlp", overrideVariable: "SHADOW_COACH_YTDLP")
+        return try CommandRunner.run(
+            executable: command.executable,
+            arguments: command.argumentsPrefix + arguments,
             environment: [
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/sbin:/usr/local/sbin"
             ]
@@ -3258,10 +3259,10 @@ enum URLMediaImporter {
     }
 
     private static func firstSpeechStart(in mediaURL: URL) -> Double? {
-        let ffmpeg = ProcessInfo.processInfo.environment["SHADOW_COACH_FFMPEG"] ?? "/opt/homebrew/bin/ffmpeg"
+        let ffmpeg = LocalToolLocator.command(named: "ffmpeg", overrideVariable: "SHADOW_COACH_FFMPEG")
         guard let output = try? CommandRunner.run(
-            executable: ffmpeg,
-            arguments: [
+            executable: ffmpeg.executable,
+            arguments: ffmpeg.argumentsPrefix + [
                 "-hide_banner",
                 "-nostats",
                 "-i", mediaURL.path,
@@ -3760,10 +3761,10 @@ enum AzurePronunciationClient {
     private static func normalizedWav(from audioURL: URL) throws -> URL {
         let wavURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ShadowCoach Azure \(UUID().uuidString).wav")
-        let ffmpeg = ProcessInfo.processInfo.environment["SHADOW_COACH_FFMPEG"] ?? "/opt/homebrew/bin/ffmpeg"
+        let ffmpeg = LocalToolLocator.command(named: "ffmpeg", overrideVariable: "SHADOW_COACH_FFMPEG")
         _ = try CommandRunner.run(
-            executable: ffmpeg,
-            arguments: ["-y", "-i", audioURL.path, "-ac", "1", "-ar", "16000", "-vn", "-f", "wav", wavURL.path],
+            executable: ffmpeg.executable,
+            arguments: ffmpeg.argumentsPrefix + ["-y", "-i", audioURL.path, "-ac", "1", "-ar", "16000", "-vn", "-f", "wav", wavURL.path],
             environment: [
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/sbin:/usr/local/sbin"
             ]
@@ -3955,6 +3956,33 @@ enum HTMLTranscriptExtractor {
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">")
+    }
+}
+
+enum LocalToolLocator {
+    struct Command {
+        let executable: String
+        let argumentsPrefix: [String]
+    }
+
+    static func command(named name: String, overrideVariable: String) -> Command {
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment[overrideVariable]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return Command(executable: override, argumentsPrefix: [])
+        }
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let candidates = [
+            appSupport.appendingPathComponent("ShadowCoach/Tools/\(name)").path,
+            "/opt/homebrew/bin/\(name)",
+            "/usr/local/bin/\(name)",
+            "/usr/bin/\(name)"
+        ]
+        if let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return Command(executable: executable, argumentsPrefix: [])
+        }
+        return Command(executable: "/usr/bin/env", argumentsPrefix: [name])
     }
 }
 

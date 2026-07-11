@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "ffmpeg": {
+      "version_policy": "Homebrew stable",
+      "install": "brew bundle --file Brewfile",
+      "required_for": ["media import", "Azure audio normalization", "prosody analysis"]
+    },
+    "yt-dlp": {
+      "version_policy": "Homebrew stable",
+      "install": "brew bundle --file Brewfile",
+      "required_for": ["URL metadata", "URL media and subtitle import"]
+    },
+    "whisperx": {
+      "version": "3.8.6",
+      "install": "scripts/install-local-tools.sh --analysis",
+      "required_for": ["local transcript", "word timestamps", "automatic-caption replacement"]
+    },
+    "praat-parselmouth": {
+      "version": "0.4.7",
+      "install": "scripts/install-local-tools.sh --analysis",
+      "required_for": ["pitch", "intensity", "pause and rhythm evidence"]
+    }
+  }
+}

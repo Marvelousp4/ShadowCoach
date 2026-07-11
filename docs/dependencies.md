@@ -54,3 +54,25 @@ For `v0.1`:
 3. Document Homebrew/Python setup for advanced local analysis.
 4. Keep Azure and Gemini opt-in.
 5. Add native on-demand transcription in a later release to make local analysis truly one-click.
+
+## Reproducible developer setup
+
+The repository now includes:
+
+```text
+Brewfile                         ffmpeg, yt-dlp, Python 3.11
+requirements/local-analysis.txt pinned WhisperX and Parselmouth versions
+config/tool-manifest.json        machine-readable capability ownership
+scripts/install-local-tools.sh   media and analysis installer
+scripts/doctor.sh                runtime verification
+```
+
+Install only what you need:
+
+```bash
+./scripts/install-local-tools.sh --media
+./scripts/install-local-tools.sh --analysis
+./scripts/install-local-tools.sh --all
+```
+
+The analysis environment is installed outside the repository at `~/.local/share/shadowcoach-whisperx-venv` by default, which is also the path the app discovers automatically.

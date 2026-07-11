@@ -8,8 +8,10 @@
 ## Recommended Import Tools
 
 ```bash
-brew install ffmpeg yt-dlp
+./scripts/install-local-tools.sh --media
 ```
+
+This uses the repository `Brewfile` to install FFmpeg and yt-dlp from Homebrew. It does not copy third-party binaries into the Git repository.
 
 ## Optional Prosody Analysis
 
@@ -20,6 +22,14 @@ python3 -m venv ~/.local/share/shadowcoach-analysis-venv
 ~/.local/share/shadowcoach-analysis-venv/bin/pip install praat-parselmouth
 export SHADOW_COACH_PYTHON="$HOME/.local/share/shadowcoach-analysis-venv/bin/python"
 ```
+
+The supported all-in-one local analysis setup is:
+
+```bash
+./scripts/install-local-tools.sh --analysis
+```
+
+It creates `~/.local/share/shadowcoach-whisperx-venv`, then installs the pinned versions in `requirements/local-analysis.txt`. The App detects this location automatically.
 
 ## Optional Transcription
 

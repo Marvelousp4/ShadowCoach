@@ -23,3 +23,4 @@ swift package resolve
 swift build
 echo
 echo 'Ready. Run: swift run ShadowCoach'
+echo 'Optional full local stack: ./scripts/install-local-tools.sh --all'

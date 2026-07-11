@@ -64,6 +64,15 @@ open ios/ShadowCoachMobile.xcodeproj
 
 各项本地工具如何分发请看 [docs/dependencies.md](docs/dependencies.md)。
 
+从各工具的官方包来源安装可选本地能力：
+
+```bash
+./scripts/install-local-tools.sh --media
+./scripts/install-local-tools.sh --analysis
+# 或一次安装两组：
+./scripts/install-local-tools.sh --all
+```
+
 ## 参与贡献
 
 请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，优先从带有 `good first issue` 的任务开始。提交 bug 时可以附上脱敏日志，但不要上传私人录音、受版权保护的媒体或 API Key。

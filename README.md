@@ -106,6 +106,15 @@ Run `./scripts/doctor.sh` to see what is available on your machine. See [setup d
 
 See [Dependency distribution](docs/dependencies.md) for what should be linked, downloaded on demand, installed with Homebrew, or kept optional.
 
+Install the optional local toolchain from official package sources:
+
+```bash
+./scripts/install-local-tools.sh --media
+./scripts/install-local-tools.sh --analysis
+# Or install both groups:
+./scripts/install-local-tools.sh --all
+```
+
 ## Data and Privacy
 
 Runtime data is stored outside the source tree:
