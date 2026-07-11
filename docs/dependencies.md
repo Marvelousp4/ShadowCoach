@@ -76,3 +76,5 @@ Install only what you need:
 ```
 
 The analysis environment is installed outside the repository at `~/.local/share/shadowcoach-whisperx-venv` by default, which is also the path the app discovers automatically.
+
+WhisperX 3.8.6 supports Python 3.10–3.13. The installer prefers Homebrew Python 3.11 and installs it when necessary; it deliberately rejects Python 3.14 instead of creating an environment that fails later. Expect roughly 2 GB of disk usage after the Python packages and first alignment/transcription models are downloaded.

@@ -80,6 +80,7 @@ Run checks:
 ```bash
 ./scripts/doctor.sh
 swift test
+./scripts/clean-room-smoke.sh
 ```
 
 Open the iPhone companion:

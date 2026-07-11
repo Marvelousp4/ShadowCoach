@@ -42,6 +42,17 @@ fi
 
 if [[ "$install_analysis" == true ]]; then
   python="${SHADOW_COACH_BOOTSTRAP_PYTHON:-}"
+  if [[ -z "$python" ]] && command -v brew >/dev/null 2>&1; then
+    brew_python="$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11"
+    if [[ ! -x "$brew_python" ]]; then
+      echo 'Installing the supported Python 3.11 runtime with Homebrew...'
+      brew install python@3.11
+      brew_python="$(brew --prefix python@3.11)/bin/python3.11"
+    fi
+    if [[ -x "$brew_python" ]]; then
+      python="$brew_python"
+    fi
+  fi
   if [[ -z "$python" ]] && command -v python3.11 >/dev/null 2>&1; then
     python="$(command -v python3.11)"
   fi
@@ -53,7 +64,13 @@ if [[ "$install_analysis" == true ]]; then
     exit 1
   fi
 
-  "$python" -m venv "$VENV_DIR"
+  if ! "$python" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 14) else 1)'; then
+    echo "WhisperX requires Python 3.10–3.13, but $python is $("$python" --version 2>&1)." >&2
+    echo 'Install Python 3.11 with Homebrew or set SHADOW_COACH_BOOTSTRAP_PYTHON.' >&2
+    exit 1
+  fi
+
+  "$python" -m venv --clear "$VENV_DIR"
   "$VENV_DIR/bin/python" -m pip install --upgrade pip
   "$VENV_DIR/bin/python" -m pip install -r "$ROOT_DIR/requirements/local-analysis.txt"
 fi

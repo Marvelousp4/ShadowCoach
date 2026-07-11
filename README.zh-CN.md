@@ -52,6 +52,7 @@ swift run ShadowCoach
 ./scripts/build-app.sh
 ./scripts/doctor.sh
 swift test
+./scripts/clean-room-smoke.sh
 ```
 
 iPhone 工程：

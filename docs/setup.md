@@ -31,6 +31,8 @@ The supported all-in-one local analysis setup is:
 
 It creates `~/.local/share/shadowcoach-whisperx-venv`, then installs the pinned versions in `requirements/local-analysis.txt`. The App detects this location automatically.
 
+WhisperX currently requires Python 3.10–3.13. The installer automatically uses or installs Homebrew Python 3.11 and will reject an incompatible default such as Python 3.14. Allow roughly 2 GB of free disk space for the environment and first-use models.
+
 ## Optional Transcription
 
 Install WhisperX in its own environment and point Shadow Coach to the executable:
