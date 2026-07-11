@@ -1,0 +1,9 @@
+{
+  "azure": {
+    "speech_key": "",
+    "speech_region": "eastus",
+    "translator_key": "",
+    "translator_endpoint": "https://api.cognitive.microsofttranslator.com",
+    "translator_region": "global"
+  }
+}

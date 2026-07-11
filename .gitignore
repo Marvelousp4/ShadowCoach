@@ -1,0 +1,13 @@
+.build/
+build/
+tmp/
+.DS_Store
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.shadowcoachbundle
+ShadowCoachMobileDocuments/
+provider-config.json
+.env
+*.log
