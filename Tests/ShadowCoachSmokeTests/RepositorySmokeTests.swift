@@ -199,6 +199,43 @@ final class RepositorySmokeTests: XCTestCase {
         XCTAssertFalse(RecordingLengthPolicy.shouldDiscard(recordingDuration: 0.5, referenceDuration: nil))
     }
 
+    func testPracticeProgressReportsHighestAnalyzedAccuracy() {
+        let lower = RecordingAttempt(
+            id: UUID(),
+            date: Date(),
+            duration: 4,
+            relativePath: "Recordings/lower.m4a",
+            analysisCache: RecordingAnalysisCache(
+                createdAt: Date(),
+                localAnalysis: makeRecordingAnalysis(reference: "I want to go.", transcript: "I go."),
+                geminiFeedback: nil
+            )
+        )
+        let higher = RecordingAttempt(
+            id: UUID(),
+            date: Date(),
+            duration: 4,
+            relativePath: "Recordings/higher.m4a",
+            analysisCache: RecordingAnalysisCache(
+                createdAt: Date(),
+                localAnalysis: makeRecordingAnalysis(reference: "I want to go.", transcript: "I want to go."),
+                geminiFeedback: nil
+            )
+        )
+        let unscored = RecordingAttempt(
+            id: UUID(),
+            date: Date(),
+            duration: 4,
+            relativePath: "Recordings/unscored.m4a"
+        )
+
+        XCTAssertEqual(
+            PracticeProgress(attempts: [lower, higher, unscored]).bestAnalyzedAccuracy,
+            100
+        )
+        XCTAssertNil(PracticeProgress(attempts: [unscored]).bestAnalyzedAccuracy)
+    }
+
     func testCoachConversationRoundTripsInsideAnalysisCache() throws {
         let analysis = makeRecordingAnalysis(reference: "I want to go.", transcript: "I want to go")
         let conversation = [

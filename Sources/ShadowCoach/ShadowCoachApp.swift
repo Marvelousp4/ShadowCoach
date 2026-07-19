@@ -3776,6 +3776,14 @@ struct PracticeProgress: Codable {
     var attempts: [RecordingAttempt] = []
     var review: SentenceReviewProgress? = nil
     var learningPath: LearningPathProgress? = nil
+
+    var bestAnalyzedAccuracy: Double? {
+        attempts.compactMap { attempt in
+            guard let accuracy = attempt.analysisCache?.localAnalysis.accuracy,
+                  accuracy.isFinite else { return nil }
+            return min(100, max(0, accuracy))
+        }.max()
+    }
 }
 
 struct RecordingAttempt: Identifiable, Codable, Hashable {
@@ -7997,6 +8005,7 @@ struct ContentView: View {
         let isFavorite = coach.practiceStore.favorites.contains(line.id)
         let progress = coach.progress(for: line)
         let quality = qualityForLine(line)
+        let bestAccuracy = progress.bestAnalyzedAccuracy
 
         return Button {
             if coach.isReviewSessionActive {
@@ -8039,10 +8048,12 @@ struct ContentView: View {
                             .foregroundStyle(Theme.warning)
                             .help("Ready to review")
                     }
-                    if progress.practiceCount > 0 {
-                        Text("\(progress.practiceCount)x")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                    if let bestAccuracy {
+                        Text("\(Int(bestAccuracy.rounded()))%")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(scoreColor(bestAccuracy))
+                            .monospacedDigit()
+                            .help("Best analyzed accuracy")
                     }
                 }
             }
