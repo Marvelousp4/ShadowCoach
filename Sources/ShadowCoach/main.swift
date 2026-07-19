@@ -33,16 +33,19 @@ enum FocusedInput: Hashable {
     case generationTopic
     case sentenceEditor
     case librarySearch
+    case coachQuestion
 }
 
 private enum LibraryDeletionTarget: Identifiable {
     case source(String)
     case line(PracticeLine)
+    case attempt(RecordingAttempt)
 
     var id: String {
         switch self {
         case .source(let source): return "source-\(source)"
         case .line(let line): return "line-\(line.id.uuidString)"
+        case .attempt(let attempt): return "attempt-\(attempt.id.uuidString)"
         }
     }
 
@@ -50,6 +53,7 @@ private enum LibraryDeletionTarget: Identifiable {
         switch self {
         case .source: return "Delete Library Folder?"
         case .line: return "Delete Sentence?"
+        case .attempt: return "Delete Recording?"
         }
     }
 
@@ -59,6 +63,8 @@ private enum LibraryDeletionTarget: Identifiable {
             return "\(source) and its saved recordings, analysis, favorites, and unused source audio will be removed."
         case .line(let line):
             return "\(line.title) and its saved recordings and analysis will be removed."
+        case .attempt:
+            return "This recording and its cached analysis will be permanently removed."
         }
     }
 }
@@ -74,6 +80,222 @@ enum CoachFeedbackProvider: String, CaseIterable, Identifiable, Codable {
         case .gemini: return "Gemini"
         case .codex: return "Local Codex"
         }
+    }
+}
+
+enum CoachFeedbackDepth: String, CaseIterable, Identifiable {
+    case focused
+    case balanced
+    case deep
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .focused: return "Focused"
+        case .balanced: return "Balanced"
+        case .deep: return "Deep"
+        }
+    }
+
+    var maxOutputTokens: Int {
+        switch self {
+        case .focused: return 700
+        case .balanced: return 1_000
+        case .deep: return 1_400
+        }
+    }
+}
+
+enum CoachFeedbackPolicy {
+    static func outputGuidance(accuracy: Double, depth: CoachFeedbackDepth) -> String {
+        let issueLimit: Int
+        switch accuracy {
+        case 90...: issueLimit = 2
+        case 70..<90: issueLimit = 3
+        default: issueLimit = 4
+        }
+
+        let characterRange: String
+        switch (depth, accuracy) {
+        case (.focused, 90...): characterRange = "120-220"
+        case (.focused, 70..<90): characterRange = "180-300"
+        case (.focused, _): characterRange = "240-360"
+        case (.balanced, 90...): characterRange = "180-300"
+        case (.balanced, 70..<90): characterRange = "260-420"
+        case (.balanced, _): characterRange = "320-480"
+        case (.deep, 90...): characterRange = "260-400"
+        case (.deep, 70..<90): characterRange = "360-560"
+        case (.deep, _): characterRange = "420-650"
+        }
+
+        let depthRule: String
+        switch depth {
+        case .focused:
+            depthRule = "Skip speculative memory diagnosis and secondary wording notes."
+        case .balanced:
+            depthRule = "Add one concise grammar, collocation, or memory explanation only when it changes the learner's next attempt."
+        case .deep:
+            depthRule = "You may add a short 深入理解 section for useful grammar, collocation, register, or a well-supported memory pattern."
+        }
+
+        return "Limit the report to about \(characterRange) Chinese characters and at most \(issueLimit) prioritized differences. \(depthRule)"
+    }
+}
+
+enum ReferenceOriginPolicy {
+    static func guidance(quality: ImportQuality?, hasSourceAudio: Bool?) -> String {
+        switch quality {
+        case .humanCaptions:
+            return "Published source audio with human captions. Treat ordinary spontaneous wording as real speech, while still allowing an obvious caption or grammar problem to be flagged cautiously."
+        case .whisperX, .whisperKit, .autoCaptions:
+            return "Authentic source recording with machine-generated captions. Preserve natural spoken style, but treat the reference text as fallible because ASR may have misheard or split words incorrectly."
+        case .localSubtitle:
+            return "A local subtitle is attached to audio. The material may be a prepared script, TTS, or local recording; audio presence alone does not prove native or natural wording. Validate the reference before teaching it."
+        case .generated:
+            return "AI-generated practice text. Validate grammar, collocation, clarity, and spoken naturalness before asking the learner to memorize it."
+        case .transcript, .estimatedTiming:
+            return "Text-derived practice material without reliable native-speech provenance. Validate the target sentence and use nearby context before teaching it."
+        case .builtIn:
+            return "Curated practice text. It is likely intentional, but still flag a genuine ambiguity or unnatural construction instead of defending it automatically."
+        case nil:
+            if hasSourceAudio == true {
+                return "Source audio is attached, but its provenance is unknown. It may be native speech, a prepared script, or TTS; validate the wording cautiously."
+            }
+            if hasSourceAudio == false {
+                return "No source audio is attached. The reference may be a user script, generated line, or TTS text, so verify that it is natural English before teaching it as the target."
+            }
+            return "The reference origin is unknown. Check its English quality cautiously and do not assume it is flawless."
+        }
+    }
+}
+
+enum AppAppearanceOption: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
+enum FeedbackTextSizeOption: String, CaseIterable, Identifiable {
+    case compact
+    case standard
+    case large
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .compact: return "Small"
+        case .standard: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    var scale: CGFloat {
+        switch self {
+        case .compact: return 0.92
+        case .standard: return 1.0
+        case .large: return 1.15
+        }
+    }
+}
+
+private struct FeedbackTextScaleKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 1.0
+}
+
+private extension EnvironmentValues {
+    var feedbackTextScale: CGFloat {
+        get { self[FeedbackTextScaleKey.self] }
+        set { self[FeedbackTextScaleKey.self] = newValue }
+    }
+}
+
+private func scaledFeedbackFont(
+    _ baseSize: CGFloat,
+    scale: CGFloat,
+    weight: Font.Weight = .regular,
+    design: Font.Design = .default
+) -> Font {
+    .system(size: (baseSize * scale).rounded(), weight: weight, design: design)
+}
+
+enum PracticeTextSizeOption: String, CaseIterable, Identifiable {
+    case compact
+    case standard
+    case large
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .compact: return "Small"
+        case .standard: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    var pointSize: CGFloat {
+        switch self {
+        case .compact: return 21
+        case .standard: return 24
+        case .large: return 28
+        }
+    }
+}
+
+enum AppSettingsSection: String, CaseIterable, Identifiable {
+    case appearance
+    case practice
+    case analysis
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .appearance: return "Appearance"
+        case .practice: return "Practice"
+        case .analysis: return "Analysis"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .appearance: return "paintbrush"
+        case .practice: return "mic"
+        case .analysis: return "waveform.badge.magnifyingglass"
+        }
+    }
+}
+
+enum RecordingLengthPolicy {
+    static func shouldDiscard(recordingDuration: Double, referenceDuration: Double?) -> Bool {
+        guard let referenceDuration,
+              recordingDuration.isFinite,
+              referenceDuration.isFinite,
+              recordingDuration >= 0,
+              referenceDuration > 0 else {
+            return false
+        }
+        return recordingDuration < referenceDuration
     }
 }
 
@@ -97,18 +319,41 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     @Published var generationLevel = "B2"
     @Published var isGeneratingLines = false
     @Published var isImporting = false
-    @Published var speechRate = 175.0
-    @Published var selectedVoiceIdentifier = NSSpeechSynthesizer.defaultVoice.rawValue
-    @Published var listenRepeats = 1
-    @Published var autoRecordAfterListen = false
+    @Published var speechRate = UserDefaults.standard.object(forKey: "SpeechRate") == nil ? 175.0 : UserDefaults.standard.double(forKey: "SpeechRate") {
+        didSet { UserDefaults.standard.set(speechRate, forKey: "SpeechRate") }
+    }
+    @Published var selectedVoiceIdentifier = UserDefaults.standard.string(forKey: "SelectedVoiceIdentifier") ?? NSSpeechSynthesizer.defaultVoice.rawValue {
+        didSet { UserDefaults.standard.set(selectedVoiceIdentifier, forKey: "SelectedVoiceIdentifier") }
+    }
+    @Published var listenRepeats: Int = {
+        let stored = UserDefaults.standard.integer(forKey: "ListenRepeats")
+        return stored > 0 ? min(stored, 5) : 1
+    }() {
+        didSet { UserDefaults.standard.set(listenRepeats, forKey: "ListenRepeats") }
+    }
+    @Published var autoRecordAfterListen = UserDefaults.standard.bool(forKey: "AutoRecordAfterListen") {
+        didSet { UserDefaults.standard.set(autoRecordAfterListen, forKey: "AutoRecordAfterListen") }
+    }
     @Published var autoAnalyzeAfterRecording = UserDefaults.standard.bool(forKey: "AutoAnalyzeAfterRecording") {
         didSet { UserDefaults.standard.set(autoAnalyzeAfterRecording, forKey: "AutoAnalyzeAfterRecording") }
+    }
+    @Published var requireFullReferenceLength = UserDefaults.standard.object(forKey: "RequireFullReferenceLength") == nil ? true : UserDefaults.standard.bool(forKey: "RequireFullReferenceLength") {
+        didSet { UserDefaults.standard.set(requireFullReferenceLength, forKey: "RequireFullReferenceLength") }
     }
     @Published var feedbackProvider = CoachFeedbackProvider(rawValue: UserDefaults.standard.string(forKey: "CoachFeedbackProvider") ?? "") ?? .codex {
         didSet { UserDefaults.standard.set(feedbackProvider.rawValue, forKey: "CoachFeedbackProvider") }
     }
+    @Published var coachFeedbackDepth = CoachFeedbackDepth(rawValue: UserDefaults.standard.string(forKey: "CoachFeedbackDepth") ?? "") ?? .focused {
+        didSet { UserDefaults.standard.set(coachFeedbackDepth.rawValue, forKey: "CoachFeedbackDepth") }
+    }
     @Published var useAzureAssessment = UserDefaults.standard.object(forKey: "UseAzureAssessment") == nil ? false : UserDefaults.standard.bool(forKey: "UseAzureAssessment") {
         didSet { UserDefaults.standard.set(useAzureAssessment, forKey: "UseAzureAssessment") }
+    }
+    @Published var useProsodyAnalysis = UserDefaults.standard.object(forKey: "UseProsodyAnalysis") == nil ? false : UserDefaults.standard.bool(forKey: "UseProsodyAnalysis") {
+        didSet { UserDefaults.standard.set(useProsodyAnalysis, forKey: "UseProsodyAnalysis") }
+    }
+    @Published var useAICoach = UserDefaults.standard.object(forKey: "UseAICoach") == nil ? false : UserDefaults.standard.bool(forKey: "UseAICoach") {
+        didSet { UserDefaults.standard.set(useAICoach, forKey: "UseAICoach") }
     }
     @Published var selectedAttemptRelativePathForAnalysis: String?
     @Published var phraseTranslation = ""
@@ -117,10 +362,14 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     @Published var isTranslatingSentence = false
     @Published var lookupSummary = ""
     @Published var isLookingUpWord = false
+    @Published var coachConversation: [CoachConversationMessage] = []
+    @Published var isAskingCodex = false
 
     private var phraseTranslationRequestID = UUID()
     private var sentenceTranslationRequestID = UUID()
     private var wordLookupRequestID = UUID()
+    private var coachConversationRequestID = UUID()
+    private var analysisRunIDs: [String: UUID] = [:]
 
     private let synthesizer = NSSpeechSynthesizer()
     private var recorder: AVAudioRecorder?
@@ -171,14 +420,14 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 return url
             }
         }
-        if isUsableRecording(at: recordingURL) {
-            return recordingURL
-        }
         for attempt in currentProgress().attempts {
             let url = appSupportDirectory.appendingPathComponent(attempt.relativePath)
             if isUsableRecording(at: url) {
                 return url
             }
+        }
+        if isUsableRecording(at: recordingURL) {
+            return recordingURL
         }
         return nil
     }
@@ -246,6 +495,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func choose(_ line: PracticeLine) {
+        // Archive an active recording against the sentence it belongs to before
+        // changing selection. The archived file also lets analysis continue safely.
+        clearRecording()
         selectedLineID = line.id
         selectedLine = line
         practiceStore.lastSelectedLineID = line.id
@@ -253,10 +505,10 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         isSentenceVisible = false
         analysis = ""
         recordingAnalysis = nil
+        resetCoachConversation()
         sentenceTranslation = ""
         sentenceTranslationRequestID = UUID()
         clearPhraseLookup()
-        clearRecording()
         savePracticeStore()
         status = "Sentence loaded. Listen first, then repeat from memory."
     }
@@ -274,14 +526,28 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
 
     func chooseNext(in lines: [PracticeLine]) {
         guard !lines.isEmpty else { return }
-        let index = lines.firstIndex { $0.id == selectedLineID } ?? -1
-        choose(lines[(index + 1) % lines.count])
+        guard let index = lines.firstIndex(where: { $0.id == selectedLineID }) else {
+            choose(lines[0])
+            return
+        }
+        guard index + 1 < lines.count else {
+            status = "Already at the last sentence in this folder."
+            return
+        }
+        choose(lines[index + 1])
     }
 
     func choosePrevious(in lines: [PracticeLine]) {
         guard !lines.isEmpty else { return }
-        let index = lines.firstIndex { $0.id == selectedLineID } ?? 0
-        choose(lines[(index - 1 + lines.count) % lines.count])
+        guard let index = lines.firstIndex(where: { $0.id == selectedLineID }) else {
+            choose(lines[0])
+            return
+        }
+        guard index > 0 else {
+            status = "Already at the first sentence in this folder."
+            return
+        }
+        choose(lines[index - 1])
     }
 
     func toggleFavorite() {
@@ -613,6 +879,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             synthesizer.stopSpeaking()
         }
         selectedAttemptRelativePathForAnalysis = nil
+        analysis = ""
+        recordingAnalysis = nil
+        resetCoachConversation()
 
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -635,8 +904,36 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         timer?.invalidate()
         timer = nil
         isRecording = false
+        if let capturedDuration = try? AVAudioPlayer(contentsOf: recordingURL).duration,
+           capturedDuration.isFinite {
+            recordingDuration = capturedDuration
+        }
         hasRecording = isUsableRecording(at: recordingURL, minimumDuration: 0.25)
         if hasRecording {
+            let referenceDuration = sourceReferenceDuration(for: selectedLine)
+            if requireFullReferenceLength && RecordingLengthPolicy.shouldDiscard(
+                recordingDuration: recordingDuration,
+                referenceDuration: referenceDuration
+            ), let referenceDuration {
+                let discardedDuration = recordingDuration
+                ImportLogger.write(
+                    String(
+                        format: "recording rejectedShort duration=%.2f reference=%.2f line=%@",
+                        discardedDuration,
+                        referenceDuration,
+                        selectedLineID?.uuidString ?? "unknown"
+                    )
+                )
+                try? FileManager.default.removeItem(at: recordingURL)
+                hasRecording = false
+                recordingDuration = 0
+                status = String(
+                    format: "Recording not saved: %.1fs is shorter than the %.1fs reference",
+                    discardedDuration,
+                    referenceDuration
+                )
+                return
+            }
             saveRecordingAttempt()
             if autoAnalyze {
                 analyzeRecording()
@@ -657,7 +954,6 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
 
         do {
             stopPlayback()
-            selectedAttemptRelativePathForAnalysis = nil
             player = try AVAudioPlayer(contentsOf: recordingURL)
             player?.delegate = self
             player?.prepareToPlay()
@@ -678,6 +974,19 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         hasRecording = false
         recordingDuration = 0
         status = "Recording cleared"
+    }
+
+    func discardCurrentRecording() {
+        stopPlayback()
+        timer?.invalidate()
+        timer = nil
+        recorder?.stop()
+        recorder = nil
+        isRecording = false
+        try? FileManager.default.removeItem(at: recordingURL)
+        hasRecording = false
+        recordingDuration = 0
+        status = "Recording discarded"
     }
 
     func currentProgress() -> PracticeProgress {
@@ -738,14 +1047,17 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             player?.prepareToPlay()
             player?.play()
             if let cache = attempt.analysisCache {
-                recordingAnalysis = displayAnalysis(cache.localAnalysis)
+                let displayedAnalysis = displayAnalysis(cache.localAnalysis)
+                recordingAnalysis = displayedAnalysis
                 analysis = cachedCoachFeedback(from: cache)
+                loadCoachConversation(from: cache)
                 status = analysis.isEmpty
-                    ? "Playing saved attempt. Local analysis loaded; analyze to refresh coach feedback."
+                    ? perfectRecallStatus(for: displayedAnalysis, fallback: "Playing saved attempt. Local analysis loaded; analyze to refresh coach feedback.")
                     : "Playing saved attempt. Loaded saved analysis."
             } else {
                 recordingAnalysis = nil
                 analysis = ""
+                resetCoachConversation()
                 status = "Playing saved attempt"
             }
         } catch {
@@ -753,21 +1065,49 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         }
     }
 
+    func selectAttempt(_ attempt: RecordingAttempt) {
+        let url = appSupportDirectory.appendingPathComponent(attempt.relativePath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            status = "Recording file missing"
+            return
+        }
+
+        selectedAttemptRelativePathForAnalysis = attempt.relativePath
+        if let cache = attempt.analysisCache {
+            let displayedAnalysis = displayAnalysis(cache.localAnalysis)
+            recordingAnalysis = displayedAnalysis
+            analysis = cachedCoachFeedback(from: cache)
+            loadCoachConversation(from: cache)
+            status = analysis.isEmpty
+                ? perfectRecallStatus(for: displayedAnalysis, fallback: "Selected saved attempt. Local analysis loaded; analyze to refresh coach feedback.")
+                : "Selected saved attempt. Loaded saved analysis."
+        } else {
+            recordingAnalysis = nil
+            analysis = ""
+            resetCoachConversation()
+            status = "Selected saved attempt"
+        }
+    }
+
     func deleteAttempt(_ attempt: RecordingAttempt) {
-        guard let selectedLineID else { return }
+        guard let location = practiceStore.progress.first(where: { _, progress in
+            progress.attempts.contains(where: { $0.id == attempt.id })
+        }) else { return }
+        let lineID = location.key
         let url = appSupportDirectory.appendingPathComponent(attempt.relativePath)
         try? FileManager.default.removeItem(at: url)
         if selectedAttemptRelativePathForAnalysis == attempt.relativePath {
             selectedAttemptRelativePathForAnalysis = nil
             recordingAnalysis = nil
             analysis = ""
+            resetCoachConversation()
         }
 
-        var progress = practiceStore.progress[selectedLineID] ?? PracticeProgress()
+        var progress = location.value
         progress.attempts.removeAll { $0.id == attempt.id }
-        progress.practiceCount = progress.attempts.count
+        progress.practiceCount = max(0, progress.practiceCount - 1)
         progress.lastPracticedAt = progress.attempts.first?.date
-        practiceStore.progress[selectedLineID] = progress
+        practiceStore.progress[lineID] = progress
         savePracticeStore()
         status = "Deleted saved attempt"
     }
@@ -797,6 +1137,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             progress.practiceCount += 1
             progress.lastPracticedAt = Date()
             progress.attempts.insert(attempt, at: 0)
+            selectedAttemptRelativePathForAnalysis = relativePath
             if progress.attempts.count > 20 {
                 let expiredAttempts = progress.attempts.dropFirst(20)
                 for expiredAttempt in expiredAttempts {
@@ -823,6 +1164,21 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         return duration.isFinite && duration >= minimumDuration
     }
 
+    private func sourceReferenceDuration(for line: PracticeLine?) -> Double? {
+        guard let line,
+              sourceAudioURL(for: line) != nil,
+              let start = line.sourceStartTime,
+              let end = line.sourceEndTime,
+              end > start else {
+            return nil
+        }
+
+        let paddedStart = max(0, start - sourceAudioLeadPadding)
+        let paddedEnd = max(end + sourceAudioTailPadding, paddedStart + 1.0)
+        let duration = paddedEnd - paddedStart
+        return duration.isFinite ? duration : nil
+    }
+
     private func cachedAnalysis(for audioURL: URL) -> RecordingAnalysisCache? {
         guard let location = attemptLocation(for: audioURL) else { return nil }
         guard let attempts = practiceStore.progress[location.lineID]?.attempts,
@@ -833,13 +1189,41 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     private func cachedCoachFeedback(from cache: RecordingAnalysisCache) -> String {
+        guard useAICoach else { return "" }
+        if let cachedCoachSetting = cache.usedAICoach, cachedCoachSetting != useAICoach {
+            return ""
+        }
         if let cachedProvider = cache.feedbackProvider, cachedProvider != feedbackProvider {
             return ""
         }
         if let cachedAzureSetting = cache.usedAzureAssessment, cachedAzureSetting != useAzureAssessment {
             return ""
         }
-        return cache.geminiFeedback ?? ""
+        if let cachedProsodySetting = cache.usedProsodyAnalysis, cachedProsodySetting != useProsodyAnalysis {
+            return ""
+        }
+        if feedbackProvider == .codex,
+           let cachedModel = cache.coachModel,
+           cachedModel != CodexFeedbackClient.coachingModel {
+            return ""
+        }
+        return CoachFeedbackSanitizer.clean(cache.geminiFeedback ?? "")
+    }
+
+    private func resetCoachConversation() {
+        coachConversationRequestID = UUID()
+        coachConversation = []
+        isAskingCodex = false
+    }
+
+    private func loadCoachConversation(from cache: RecordingAnalysisCache) {
+        coachConversationRequestID = UUID()
+        coachConversation = cache.coachConversation ?? []
+        isAskingCodex = false
+    }
+
+    private func perfectRecallStatus(for analysis: RecordingAnalysis, fallback: String) -> String {
+        analysis.isPerfectWordRecall ? "100% word recall. Coach analysis was not needed." : fallback
     }
 
     private func saveAnalysisCache(_ cache: RecordingAnalysisCache, for audioURL: URL) {
@@ -849,6 +1233,20 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             return
         }
 
+        progress.attempts[location.attemptIndex].analysisCache = cache
+        practiceStore.progress[location.lineID] = progress
+        savePracticeStore()
+    }
+
+    private func saveCoachConversation(_ messages: [CoachConversationMessage], for audioURL: URL) {
+        guard let location = attemptLocation(for: audioURL),
+              var progress = practiceStore.progress[location.lineID],
+              progress.attempts.indices.contains(location.attemptIndex),
+              var cache = progress.attempts[location.attemptIndex].analysisCache else {
+            return
+        }
+
+        cache.coachConversation = messages
         progress.attempts[location.attemptIndex].analysisCache = cache
         practiceStore.progress[location.lineID] = progress
         savePracticeStore()
@@ -981,6 +1379,59 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         isLookingUpWord = false
     }
 
+    func askCodex(_ question: String) {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isAskingCodex else { return }
+        guard let audioURL = analysisRecordingURL,
+              let currentAnalysis = recordingAnalysis else {
+            status = "Analyze a recording before asking Codex."
+            return
+        }
+
+        let userMessage = CoachConversationMessage(role: .user, text: trimmed)
+        let conversation = Array((coachConversation + [userMessage]).suffix(12))
+        let requestID = UUID()
+        coachConversationRequestID = requestID
+        coachConversation = conversation
+        isAskingCodex = true
+        saveCoachConversation(conversation, for: audioURL)
+        status = "Asking Codex about this result..."
+
+        let prompt = codexFollowUpPrompt(
+            question: trimmed,
+            localAnalysis: currentAnalysis,
+            existingFeedback: analysis,
+            conversation: conversation
+        )
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let rawAnswer = try await CodexFeedbackClient.run(
+                    prompt: prompt,
+                    model: CodexFeedbackClient.coachingModel,
+                    reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                )
+                let answer = CoachFeedbackSanitizer.clean(rawAnswer)
+                let completedConversation = Array(
+                    (conversation + [CoachConversationMessage(role: .assistant, text: answer)]).suffix(12)
+                )
+                await MainActor.run {
+                    self.saveCoachConversation(completedConversation, for: audioURL)
+                    guard self.coachConversationRequestID == requestID else { return }
+                    self.coachConversation = completedConversation
+                    self.isAskingCodex = false
+                    self.status = "Codex follow-up ready"
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.coachConversationRequestID == requestID else { return }
+                    self.isAskingCodex = false
+                    self.status = "Codex follow-up failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     func analyzeRecording(forceRefresh: Bool = false) {
         guard !isAnalyzing else { return }
         guard let audioURL = analysisRecordingURL else {
@@ -991,32 +1442,77 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             status = "Recording file is incomplete. Record again, then analyze."
             return
         }
-        if !forceRefresh, let cache = cachedAnalysis(for: audioURL) {
-            recordingAnalysis = displayAnalysis(cache.localAnalysis)
+        let expectedTranscriptModel = useProsodyAnalysis
+            ? WhisperXTranscriber.alignedCacheIdentifier
+            : FastWhisperTranscriber.cacheIdentifier
+        if !forceRefresh,
+           let cache = cachedAnalysis(for: audioURL),
+           cache.transcriptModel == expectedTranscriptModel {
+            let displayedAnalysis = displayAnalysis(cache.localAnalysis)
+            recordingAnalysis = displayedAnalysis
             analysis = cachedCoachFeedback(from: cache)
-            status = analysis.isEmpty ? "Loaded local analysis. Analyze again for current coach settings." : "Loaded saved analysis"
+            loadCoachConversation(from: cache)
+            status = analysis.isEmpty
+                ? perfectRecallStatus(for: displayedAnalysis, fallback: "Loaded local analysis. Analyze again for current coach settings.")
+                : "Loaded saved analysis"
             return
         }
 
         isAnalyzing = true
         analysis = ""
         recordingAnalysis = nil
+        resetCoachConversation()
         status = "Analyzing transcript..."
         let analysisLine = currentAnalysisLine(for: audioURL)
+        let analysisLineID = attemptLocation(for: audioURL)?.lineID ?? analysisLine?.id
+        let analysisTitle = analysisLine?.title ?? "previous sentence"
         let targetSentence = analysisLine?.text ?? currentTargetSentence(for: audioURL)
+        let analysisContext = neighboringContext(for: analysisLine)
+        let analysisSource = analysisLine.map { "\($0.source) · \($0.title)" }
         let referenceAudioURL = sourceAudioURL(for: analysisLine)
         let referenceStart = analysisLine?.sourceStartTime
         let referenceEnd = analysisLine?.sourceEndTime
         let apiKeySnapshot = apiKey
         let feedbackProviderSnapshot = feedbackProvider
         let useAzureAssessmentSnapshot = useAzureAssessment
+        let useProsodyAnalysisSnapshot = useProsodyAnalysis
+        let useAICoachSnapshot = useAICoach
+        let analysisRunID = UUID()
+        analysisRunIDs[analysisRunKey(for: audioURL)] = analysisRunID
         ImportLogger.write("recordingAnalysis targetSentenceSnapshot=\(targetSentence)")
 
         Task.detached(priority: .userInitiated) {
             do {
-                ImportLogger.write("recordingAnalysis whisperx start audio=\(audioURL.path)")
-                let detailed = try await WhisperXTranscriber.transcribeDetailed(audioURL)
-                ImportLogger.write("recordingAnalysis whisperx done transcriptChars=\(detailed.transcript.count) words=\(detailed.words.count)")
+                let transcriptStartedAt = Date()
+                let detailed: DetailedTranscript
+                let transcriptModelIdentifier: String
+                if useProsodyAnalysisSnapshot {
+                    ImportLogger.write("recordingAnalysis whisperx aligned start audio=\(audioURL.path)")
+                    detailed = try await WhisperXTranscriber.transcribeDetailed(
+                        audioURL,
+                        referenceText: targetSentence
+                    )
+                    transcriptModelIdentifier = WhisperXTranscriber.alignedCacheIdentifier
+                    ImportLogger.write("recordingAnalysis whisperx aligned done seconds=\(String(format: "%.2f", Date().timeIntervalSince(transcriptStartedAt))) transcriptChars=\(detailed.transcript.count) words=\(detailed.words.count)")
+                } else {
+                    ImportLogger.write("recordingAnalysis fast transcript start audio=\(audioURL.path)")
+                    do {
+                        detailed = try await FastWhisperTranscriber.transcribeDetailed(
+                            audioURL,
+                            referenceText: targetSentence
+                        )
+                        transcriptModelIdentifier = FastWhisperTranscriber.cacheIdentifier
+                    } catch {
+                        ImportLogger.write("recordingAnalysis fast transcript failed; falling back to WhisperX: \(error.localizedDescription)")
+                        detailed = try await WhisperXTranscriber.transcribeDetailed(
+                            audioURL,
+                            alignWords: false,
+                            referenceText: targetSentence
+                        )
+                        transcriptModelIdentifier = WhisperXTranscriber.unalignedCacheIdentifier
+                    }
+                    ImportLogger.write("recordingAnalysis fast transcript done seconds=\(String(format: "%.2f", Date().timeIntervalSince(transcriptStartedAt))) transcriptChars=\(detailed.transcript.count)")
+                }
                 let targetWords = WordDiffEngine.tokenize(targetSentence)
                 ImportLogger.write("recordingAnalysis targetWords=\(targetWords.map { $0.normalized }.joined(separator: "|"))")
                 guard !targetWords.isEmpty else {
@@ -1025,7 +1521,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 let azure: AzurePronunciationAnalysis?
                 if useAzureAssessmentSnapshot {
                     await MainActor.run {
-                        self.status = "Checking pronunciation with Azure..."
+                        self.updateAnalysisStatus("Checking pronunciation with Azure...", for: audioURL, lineID: analysisLineID)
                     }
                     do {
                         azure = try await AzurePronunciationClient.assess(
@@ -1066,22 +1562,27 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     }
                 }
                 ImportLogger.write("recordingAnalysis diff accuracy=\(local.accuracy) missing=\(local.missingWords.count) extra=\(local.extraWords.count)")
-                await MainActor.run {
-                    self.status = "Analyzing rhythm..."
-                }
                 let prosody: ProsodyAnalysis?
-                do {
-                    prosody = try ProsodyAnalyzer.analyze(
-                        userAudioURL: audioURL,
-                        referenceAudioURL: referenceAudioURL,
-                        referenceStart: referenceStart,
-                        referenceEnd: referenceEnd,
-                        userWords: userWords,
-                        targetWordCount: targetWords.count
-                    )
-                    ImportLogger.write("recordingAnalysis prosody done")
-                } catch {
-                    ImportLogger.write("recordingAnalysis prosody failed \(error.localizedDescription)")
+                if useProsodyAnalysisSnapshot {
+                    await MainActor.run {
+                        self.updateAnalysisStatus("Analyzing rhythm and pitch...", for: audioURL, lineID: analysisLineID)
+                    }
+                    do {
+                        prosody = try ProsodyAnalyzer.analyze(
+                            userAudioURL: audioURL,
+                            referenceAudioURL: referenceAudioURL,
+                            referenceStart: referenceStart,
+                            referenceEnd: referenceEnd,
+                            userWords: userWords,
+                            targetWordCount: targetWords.count
+                        )
+                        ImportLogger.write("recordingAnalysis prosody done")
+                    } catch {
+                        ImportLogger.write("recordingAnalysis prosody failed \(error.localizedDescription)")
+                        prosody = nil
+                    }
+                } else {
+                    ImportLogger.write("recordingAnalysis prosody skipped")
                     prosody = nil
                 }
                 let pronunciationIssues = PronunciationRuleEngine.analyze(
@@ -1089,16 +1590,19 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     azure: azure,
                     prosody: prosody
                 )
-                await MainActor.run {
-                    self.status = "Detecting pronunciation patterns..."
-                }
                 let recordingAnalysis = RecordingAnalysis(
                     referenceText: targetSentence,
+                    sourceTitle: analysisSource,
+                    referenceHasSourceAudio: referenceAudioURL != nil,
+                    referenceQuality: analysisLine?.quality,
+                    contextBefore: analysisContext.before,
+                    contextAfter: analysisContext.after,
                     transcript: detailed.transcript,
                     accuracy: local.accuracy,
                     items: local.items,
                     missingWords: local.missingWords,
                     extraWords: local.extraWords,
+                    substitutions: local.substitutions,
                     issueHints: RecordingIssueBuilder.hints(
                         targetSentence: targetSentence,
                         transcript: detailed.transcript,
@@ -1113,86 +1617,176 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     pronunciationIssues: pronunciationIssues,
                     prosody: prosody
                 )
-                let shouldAskCoach = feedbackProviderSnapshot == .codex || !apiKeySnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let providerIsReady = feedbackProviderSnapshot == .codex || !apiKeySnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let shouldSkipCoach = recordingAnalysis.isPerfectWordRecall
+                let shouldAskCoach = useAICoachSnapshot && providerIsReady && !shouldSkipCoach
                 ImportLogger.write("recordingAnalysis feedback provider=\(feedbackProviderSnapshot.rawValue) enabled=\(shouldAskCoach)")
-                if shouldAskCoach {
-                    await MainActor.run {
-                        self.status = "Generating coach feedback..."
+
+                let coreCache = RecordingAnalysisCache(
+                    createdAt: Date(),
+                    localAnalysis: recordingAnalysis,
+                    geminiFeedback: nil,
+                    feedbackProvider: feedbackProviderSnapshot,
+                    usedAzureAssessment: useAzureAssessmentSnapshot,
+                    usedProsodyAnalysis: useProsodyAnalysisSnapshot,
+                    usedAICoach: useAICoachSnapshot,
+                    coachModel: feedbackProviderSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                    transcriptModel: transcriptModelIdentifier
+                )
+                let shouldContinueWithCoach = await MainActor.run { () -> Bool in
+                    guard self.isCurrentAnalysisRun(analysisRunID, for: audioURL) else {
+                        self.isAnalyzing = false
+                        return false
                     }
-                }
-                let coachFeedback: String?
-                if shouldAskCoach {
-                    switch feedbackProviderSnapshot {
-                    case .codex:
-                        await MainActor.run {
-                            self.status = "Generating Codex coach feedback..."
+                    self.saveAnalysisCache(coreCache, for: audioURL)
+                    if self.shouldPresentAnalysis(for: audioURL, lineID: analysisLineID) {
+                        self.recordingAnalysis = self.displayAnalysis(recordingAnalysis)
+                        self.analysis = ""
+                        if shouldSkipCoach {
+                            self.status = "100% word recall. Coach analysis skipped."
+                        } else if shouldAskCoach {
+                            self.status = "Content comparison ready. Meaning and memory analysis is finishing in the background..."
+                        } else if useAICoachSnapshot && !providerIsReady {
+                            self.status = "Content comparison ready. Add a Gemini key to run meaning and memory analysis."
+                        } else {
+                            self.status = "Content comparison ready"
                         }
-                        do {
-                            coachFeedback = try await self.requestCodexFeedback(localAnalysis: recordingAnalysis)
-                        } catch {
-                            coachFeedback = "## Codex feedback failed\n\n\(error.localizedDescription)"
-                            ImportLogger.write("recordingAnalysis codex failed \(error.localizedDescription)")
-                        }
-                    case .gemini:
-                        await MainActor.run {
-                            self.status = "Generating Gemini audio feedback..."
-                        }
-                        coachFeedback = try? await self.requestGeminiFeedback(localAnalysis: recordingAnalysis)
+                    } else if !self.isRecording && !self.status.lowercased().contains("playing") {
+                        self.status = "Background content analysis saved for \(analysisTitle)"
                     }
-                } else {
-                    coachFeedback = nil
-                }
-                await MainActor.run {
-                    self.recordingAnalysis = recordingAnalysis
-                    self.analysis = coachFeedback ?? ""
-                    self.saveAnalysisCache(
-                        RecordingAnalysisCache(
-                            createdAt: Date(),
-                            localAnalysis: recordingAnalysis,
-                            geminiFeedback: coachFeedback,
-                            feedbackProvider: feedbackProviderSnapshot,
-                            usedAzureAssessment: useAzureAssessmentSnapshot
-                        ),
-                        for: audioURL
-                    )
-                    self.status = shouldAskCoach ? "Recording analysis ready" : "Local analysis ready. Choose Local Codex or add Gemini key for coaching notes."
                     self.isAnalyzing = false
+                    if !shouldAskCoach {
+                        self.finishAnalysisRun(analysisRunID, for: audioURL)
+                    }
+                    return shouldAskCoach
+                }
+                guard shouldContinueWithCoach else { return }
+
+                let coachFeedback: String?
+                var coachError: Error?
+                let coachStartedAt = Date()
+                switch feedbackProviderSnapshot {
+                case .codex:
+                    do {
+                        coachFeedback = try await self.requestCodexFeedback(
+                            localAnalysis: recordingAnalysis,
+                            onPartial: { [weak self] partial in
+                                Task { @MainActor in
+                                    guard let self,
+                                          self.isCurrentAnalysisRun(analysisRunID, for: audioURL),
+                                          self.shouldPresentAnalysis(for: audioURL, lineID: analysisLineID) else {
+                                        return
+                                    }
+                                    self.analysis = partial
+                                    self.status = "Meaning and memory analysis..."
+                                }
+                            }
+                        )
+                    } catch {
+                        coachFeedback = nil
+                        coachError = error
+                        ImportLogger.write("recordingAnalysis codex failed \(error.localizedDescription)")
+                    }
+                case .gemini:
+                    do {
+                        coachFeedback = try await self.requestGeminiFeedback(
+                            localAnalysis: recordingAnalysis,
+                            audioURL: audioURL,
+                            apiKey: apiKeySnapshot
+                        )
+                    } catch {
+                        coachFeedback = nil
+                        coachError = error
+                        ImportLogger.write("recordingAnalysis gemini failed \(error.localizedDescription)")
+                    }
+                }
+                ImportLogger.write("recordingAnalysis coach done provider=\(feedbackProviderSnapshot.rawValue) seconds=\(String(format: "%.2f", Date().timeIntervalSince(coachStartedAt))) success=\(coachFeedback != nil)")
+                let coachErrorMessage = coachError.map { String($0.localizedDescription.prefix(180)) }
+
+                await MainActor.run {
+                    guard self.isCurrentAnalysisRun(analysisRunID, for: audioURL) else { return }
+                    let currentConversation = self.cachedAnalysis(for: audioURL)?.coachConversation
+                    let completedCache = RecordingAnalysisCache(
+                        createdAt: Date(),
+                        localAnalysis: recordingAnalysis,
+                        geminiFeedback: coachFeedback,
+                        feedbackProvider: feedbackProviderSnapshot,
+                        usedAzureAssessment: useAzureAssessmentSnapshot,
+                        usedProsodyAnalysis: useProsodyAnalysisSnapshot,
+                        usedAICoach: useAICoachSnapshot,
+                        coachModel: feedbackProviderSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                        transcriptModel: transcriptModelIdentifier,
+                        coachConversation: currentConversation
+                    )
+                    self.saveAnalysisCache(completedCache, for: audioURL)
+                    if self.shouldPresentAnalysis(for: audioURL, lineID: analysisLineID) {
+                        self.recordingAnalysis = self.displayAnalysis(recordingAnalysis)
+                        self.analysis = self.cachedCoachFeedback(from: completedCache)
+                        if let coachErrorMessage {
+                            self.status = "Content is saved. AI coach failed: \(coachErrorMessage)"
+                        } else {
+                            self.status = "Recording analysis ready"
+                        }
+                    }
+                    self.finishAnalysisRun(analysisRunID, for: audioURL)
                 }
             } catch {
                 ImportLogger.write("recordingAnalysis failed \(error.localizedDescription)")
                 await MainActor.run {
-                    self.analysis = ""
-                    self.recordingAnalysis = nil
-                    self.status = self.actionableRecordingAnalysisStatus(for: error)
+                    guard self.isCurrentAnalysisRun(analysisRunID, for: audioURL) else { return }
+                    if self.shouldPresentAnalysis(for: audioURL, lineID: analysisLineID) {
+                        self.analysis = ""
+                        self.recordingAnalysis = nil
+                        self.status = self.actionableRecordingAnalysisStatus(for: error)
+                    } else if !self.isRecording && !self.status.lowercased().contains("playing") {
+                        self.status = "Background analysis failed for \(analysisTitle)"
+                    }
                     self.isAnalyzing = false
+                    self.finishAnalysisRun(analysisRunID, for: audioURL)
                 }
             }
         }
     }
 
     private func displayAnalysis(_ analysis: RecordingAnalysis) -> RecordingAnalysis {
-        guard !useAzureAssessment, analysis.azure != nil else { return analysis }
+        let refreshedDiff = WordDiffEngine.analyze(
+            targetWords: WordDiffEngine.tokenize(analysis.referenceText),
+            userWords: WordDiffEngine.tokenize(analysis.transcript)
+        )
+        let visibleAzure = useAzureAssessment ? analysis.azure : nil
+        let visibleProsody = useProsodyAnalysis ? analysis.prosody : nil
+        let visiblePronunciationIssues = PronunciationRuleEngine.analyze(
+            referenceText: analysis.referenceText,
+            azure: visibleAzure,
+            prosody: visibleProsody
+        )
         let localHints = RecordingIssueBuilder.hints(
             targetSentence: analysis.referenceText,
             transcript: analysis.transcript,
-            missingWords: analysis.missingWords,
-            extraWords: analysis.extraWords,
-            azure: nil,
-            pronunciationIssues: [],
-            prosody: analysis.prosody
+            missingWords: refreshedDiff.missingWords,
+            extraWords: refreshedDiff.extraWords,
+            azure: visibleAzure,
+            pronunciationIssues: visiblePronunciationIssues,
+            prosody: visibleProsody
         )
         return RecordingAnalysis(
             referenceText: analysis.referenceText,
+            sourceTitle: analysis.sourceTitle,
+            referenceHasSourceAudio: analysis.referenceHasSourceAudio,
+            referenceQuality: analysis.referenceQuality,
+            contextBefore: analysis.contextBefore,
+            contextAfter: analysis.contextAfter,
             transcript: analysis.transcript,
-            accuracy: analysis.accuracy,
-            items: analysis.items,
-            missingWords: analysis.missingWords,
-            extraWords: analysis.extraWords,
+            accuracy: refreshedDiff.accuracy,
+            items: refreshedDiff.items,
+            missingWords: refreshedDiff.missingWords,
+            extraWords: refreshedDiff.extraWords,
+            substitutions: refreshedDiff.substitutions,
             issueHints: localHints,
             whisperXRawJSON: analysis.whisperXRawJSON,
-            azure: nil,
-            pronunciationIssues: nil,
-            prosody: analysis.prosody
+            azure: visibleAzure,
+            pronunciationIssues: visiblePronunciationIssues.isEmpty ? nil : visiblePronunciationIssues,
+            prosody: visibleProsody
         )
     }
 
@@ -1231,6 +1825,47 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             return line.text
         }
         return sentence
+    }
+
+    private func neighboringContext(for line: PracticeLine?) -> (before: String?, after: String?) {
+        guard let line else { return (nil, nil) }
+        let allLines = importedLines + generatedLines + PracticeLine.library
+        let sameSource = allLines.filter { $0.source == line.source }
+        guard let index = sameSource.firstIndex(where: { $0.id == line.id }) else {
+            return (nil, nil)
+        }
+        let before = index > sameSource.startIndex ? sameSource[sameSource.index(before: index)].text : nil
+        let nextIndex = sameSource.index(after: index)
+        let after = nextIndex < sameSource.endIndex ? sameSource[nextIndex].text : nil
+        return (before, after)
+    }
+
+    private func shouldPresentAnalysis(for audioURL: URL, lineID: UUID?) -> Bool {
+        guard let lineID,
+              selectedLineID == lineID,
+              let currentURL = analysisRecordingURL else {
+            return false
+        }
+        return currentURL.standardizedFileURL.path == audioURL.standardizedFileURL.path
+    }
+
+    private func updateAnalysisStatus(_ message: String, for audioURL: URL, lineID: UUID?) {
+        guard shouldPresentAnalysis(for: audioURL, lineID: lineID) else { return }
+        status = message
+    }
+
+    private func analysisRunKey(for audioURL: URL) -> String {
+        audioURL.standardizedFileURL.path
+    }
+
+    private func isCurrentAnalysisRun(_ id: UUID, for audioURL: URL) -> Bool {
+        analysisRunIDs[analysisRunKey(for: audioURL)] == id
+    }
+
+    private func finishAnalysisRun(_ id: UUID, for audioURL: URL) {
+        let key = analysisRunKey(for: audioURL)
+        guard analysisRunIDs[key] == id else { return }
+        analysisRunIDs.removeValue(forKey: key)
     }
 
     private func lineIDFromRecordingURL(_ url: URL) -> UUID? {
@@ -1678,10 +2313,11 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         status = "Microphone permission is needed. Enable it in System Settings > Privacy & Security > Microphone."
     }
 
-    private func requestGeminiFeedback(localAnalysis: RecordingAnalysis) async throws -> String {
-        guard let audioURL = analysisRecordingURL else {
-            throw NSError(domain: "Gemini", code: -2, userInfo: [NSLocalizedDescriptionKey: "No recording available for analysis"])
-        }
+    private func requestGeminiFeedback(
+        localAnalysis: RecordingAnalysis,
+        audioURL: URL,
+        apiKey: String
+    ) async throws -> String {
         let audioData = try Data(contentsOf: audioURL)
         let prompt = coachFeedbackPrompt(localAnalysis: localAnalysis, includeAudioInstruction: true)
         let requestBody: [String: Any] = [
@@ -1701,7 +2337,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             ],
             "generationConfig": [
                 "temperature": 0.2,
-                "maxOutputTokens": 700
+                "maxOutputTokens": coachFeedbackDepth.maxOutputTokens
             ]
         ]
 
@@ -1723,15 +2359,31 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         guard let text, !text.isEmpty else {
             throw NSError(domain: "Gemini", code: -1, userInfo: [NSLocalizedDescriptionKey: "No text feedback returned"])
         }
-        return text
+        return CoachFeedbackSanitizer.clean(text)
     }
 
-    private func requestCodexFeedback(localAnalysis: RecordingAnalysis) async throws -> String {
+    private func requestCodexFeedback(
+        localAnalysis: RecordingAnalysis,
+        onPartial: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         let prompt = coachFeedbackPrompt(localAnalysis: localAnalysis, includeAudioInstruction: false)
-        return try await CodexFeedbackClient.run(prompt: prompt)
+        let sanitizedPartial = onPartial.map { callback -> @Sendable (String) -> Void in
+            { @Sendable partial in
+                callback(CoachFeedbackSanitizer.clean(partial))
+            }
+        }
+        let response = try await CodexFeedbackClient.run(
+            prompt: prompt,
+            model: CodexFeedbackClient.coachingModel,
+            reasoningEffort: CodexFeedbackClient.coachingReasoningEffort,
+            onPartial: sanitizedPartial
+        )
+        return CoachFeedbackSanitizer.clean(response)
     }
 
     private func coachFeedbackPrompt(localAnalysis: RecordingAnalysis, includeAudioInstruction: Bool) -> String {
+        let spokenReference = WordDiffEngine.comparisonText(localAnalysis.referenceText)
+        let spokenTranscript = WordDiffEngine.comparisonText(localAnalysis.transcript)
         let azureSummary: String
         if let azure = localAnalysis.azure, azure.enabled, azure.error == nil {
             let weakWords = azure.words
@@ -1759,17 +2411,47 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 "- \(issue.title): \(issue.evidence) Coach note: \(issue.coachNote)"
             }
             .joined(separator: "\n")
+        let substitutionSummary = (localAnalysis.substitutions ?? [])
+            .prefix(4)
+            .map { "- User said \"\($0.spoken)\" where the reference uses \"\($0.expected)\"." }
+            .joined(separator: "\n")
+        let sentenceContext = [
+            localAnalysis.sourceTitle.map { "- Material: \($0)" },
+            localAnalysis.contextBefore.map { "- Previous sentence: \"\($0)\"" },
+            localAnalysis.contextAfter.map { "- Next sentence: \"\($0)\"" }
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n")
+        let referenceOrigin = ReferenceOriginPolicy.guidance(
+            quality: localAnalysis.referenceQuality,
+            hasSourceAudio: localAnalysis.referenceHasSourceAudio
+        )
+        let outputGuidance = CoachFeedbackPolicy.outputGuidance(
+            accuracy: localAnalysis.accuracy,
+            depth: coachFeedbackDepth
+        )
         return """
         You are an English shadowing coach for a Chinese native speaker.
         Return only polished coach feedback. Do not include greetings, prefaces, roleplay, raw logs, JSON, tool names, or phrases like "好的", "请听我说", "Here is", or "Sure".
-        Target sentence:
+        Original sentence (use for meaning only; its punctuation and capitalization are not speech evidence):
         "\(localAnalysis.referenceText)"
 
+        Reference origin:
+        \(referenceOrigin)
+
+        Spoken-word comparison (this is the only text allowed for recall comparison):
+        - Reference words: "\(spokenReference)"
+        - Recognized user words: "\(spokenTranscript)"
+
+        Nearby context (use it only to interpret meaning, reference, and emphasis):
+        \(sentenceContext.isEmpty ? "not available" : sentenceContext)
+
         Local transcript analysis:
-        - User transcript: "\(localAnalysis.transcript)"
         - Accuracy: \(Int(localAnalysis.accuracy.rounded()))/100
-        - Missing words: \(localAnalysis.missingWords.joined(separator: ", "))
-        - Extra words: \(localAnalysis.extraWords.joined(separator: ", "))
+        - Reference words not recognized: \(localAnalysis.missingWords.joined(separator: ", "))
+        - Additional recognized words: \(localAnalysis.extraWords.joined(separator: ", "))
+        - Word substitutions:
+        \(substitutionSummary.isEmpty ? "none" : substitutionSummary)
 
         \(azureSummary.isEmpty ? "" : azureSummary)
 
@@ -1777,34 +2459,104 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         \(ruleSummary.isEmpty ? "No specific rule issue found." : ruleSummary)
 
         \(includeAudioInstruction ? "Listen to the user's recording and use the evidence above." : "Use only the evidence above. You do not have direct access to the user's audio, so do not claim you heard the recording.")
-        Return concise Markdown in Chinese. Keep it practical, clean, and app-friendly. Avoid tables.
+        HARD RULE: speech does not provide reliable commas, periods, other punctuation, or capitalization. Never say the learner missed, added, or changed punctuation/capitalization, even if the raw strings differ. Never infer punctuation from a pause. If the word substitutions, not-recognized words, and additional words are all empty, state that the spoken-word recall is complete and do not invent another textual difference.
+        Treat recognition as uncertain evidence. A word listed as not recognized may be an ASR error; use cautious wording unless audio or pronunciation evidence confirms an omission.
+        Analyze this as a shadowing attempt, not merely a transcription diff. The learner needs to know what changed, how serious it is, and exactly what to say next.
+        Return clear Markdown in Chinese. Keep it practical, specific, and app-friendly. Avoid tables.
         Do not mention Azure, WhisperX, Praat, or Gemini in the visible feedback. Say "系统识别" if you need to refer to evidence.
-        Use this exact structure:
+        Keep three judgments separate:
+        1. Spoken-word recall: whether the learner reproduced the reference words. Punctuation and capitalization never count.
+        2. English quality: whether the learner's own wording is grammatical and natural.
+        3. Meaning fidelity: whether the learner preserved, broadened, narrowed, or changed the speaker's meaning.
+        A wording difference is not automatically an English mistake. If the learner's version is natural and preserves the meaning, explicitly call it a recall difference rather than a language error.
+        Before writing, silently compare the two complete propositions: actor, polarity, action, object/scope, logical relation, and time/location. State exactly which slots stayed the same and which changed. Never say the conclusion changed when its polarity and outcome were preserved.
+        Validate the reference before defending it:
+        - If it is natural and clear, do not comment on its quality.
+        - If authentic audio contains ordinary spontaneous phrasing, preserve it and briefly label it as spoken style rather than rewriting it into essay English.
+        - If a script/TTS/local-subtitle reference is understandable but awkward, ambiguous, or unidiomatic, do not make the learner memorize it. Add a short `## 参考句检查` section immediately after `## 核心判断`, name the construction problem, and give one simpler natural target that preserves the intended meaning.
+        - Rewrite a reference only for a real quality problem, not a personal style preference. When context is insufficient, say the intended relationship is unclear instead of inventing one.
+        - If a reference vaguely says that one thing "connects A with B" when the context appears to mean "explains both A and B", flag the relationship as unclear instead of teaching the vague wording as a collocation.
+        Rank differences by learning impact, not by their order in the sentence:
+        1. Critical: polarity or conclusion reversal, especially lost or added no/not/never/without; changed modality, logical relation, subject, action, or time.
+        2. Important: grammar or collocation that makes the wording unnatural or changes a relationship between ideas.
+        3. Minor: lost precision or detail that does not change the main conclusion.
+        4. Acceptable paraphrase: natural English with similar meaning but not exact shadowing recall.
+        Do not exaggerate a vocabulary distinction. Words such as change/modification or different/several can both be natural; judge the complete phrase and exact context. Never invent an extra meaning such as "different types" unless the context actually says that.
+        Negative constructions can be equivalent: `found no change` and `didn't find any change` are both natural and normally preserve the same negative conclusion. Distinguish a valid construction from an execution error such as `didn't found`, which must be `didn't find`.
+        Never bury a polarity reversal under general comments such as "the meaning changed a little". State the reversed conclusion directly.
+        The substitution, missing-word, and extra-word lists are noisy alignment hints, not ground truth. Always verify them against the two complete word strings. Ignore any token pair that conflicts with the actual phrase order, and merge neighboring or overlapping edits into one phrase-level correction. Never output a mechanical token correction such as `physical → the` when the real issue is a reordered phrase.
+        Explain only differences that change the learner's next attempt. Do not analyze every token, repeat the same point in multiple sections, or claim the reference is universally better. Repair an obvious local grammar error mentally before comparing the larger meaning, then discuss that grammar error only once. Do not create a broad phrase item and a second narrow item that repeat the same correction.
+        Do not diagnose why the learner remembered something from a single attempt. Only present a memory cause as a possibility when the text gives strong evidence; otherwise omit it.
 
-        ## 这次结果
-        - 正确率：0-100
-        - 结论：一句话，直接说最主要的问题
+        Output budget:
+        \(outputGuidance)
 
-        ## 你可能读成了
-        `user transcript`，如果不稳定就写“音频不清楚，无法稳定转写”
+        Use this structure:
 
-        ## 句意和语块
-        - 句意：一句中文
-        - 语块：用 ` / ` 拆成 2-5 个自然 chunk
-        - 重点表达：只列 1-3 个
+        ## 核心判断
+        最多两句。先具体说用户保留正确了什么，再直接指出最严重的含义或复述问题；第二句说明用户自己的英文是否自然。不要使用“略有变化”掩盖真正的结论反转，也不要把仍然保留的结论误判为反转。
 
-        ## 为什么会漏记
-        - 只给最可能的 1-2 个原因
+        ## 优先修改
+        只列最值得修改的差异，并按严重程度排序。每项必须使用一个 `- ` 项目：`- **[关键/重要/轻微/可接受改写] 用户表达 → 原句表达**：一句具体解释。` 对自然的同义改写明确写“可接受改写”，不要称为错误。如果没有有意义的差异，省略本节。
 
-        ## 要改哪里
-        - 漏词/多词/读错：只说最关键的 1-3 个
-        - 发音/节奏：只说有证据支持的点
+        ## 记忆骨架
+        只给一行，用 2-4 个可直接复述的语块和箭头保留句法与逻辑关系。可以用方括号显示槽位，例如 `checked [recent records] → found no [configuration change] → that matched [the timing]`。必须保留关键介词、否定词和关系从句，不能只堆孤立关键词。若你修正了参考句，记忆骨架必须来自修正版。
 
-        ## 下一次怎么读
-        1. 一个具体 correction
-        2. 一个 20-60 秒 repeatable drill
+        ## 马上重说
+        先给最关键的正确语块，再给完整目标句。若参考句检查提供了修正版，这里使用修正版；否则使用原句。总共不超过两行，不要再解释。
 
-        Be practical and do not overclaim. If the evidence is weak, say so. Keep the whole answer under 350 Chinese characters unless there are many clear errors.
+        For Balanced or Deep output only, you may add this section when it is genuinely useful:
+        ## 深入理解
+        用 1-3 条解释必要的语法、搭配、语域，或有充分文本证据支持的记忆模式。Focused 模式禁止生成本节。
+
+        Be practical and do not overclaim. Only discuss pronunciation or rhythm when the supplied evidence supports it. Use short paragraphs or bullets so it remains easy to scan.
+        """
+    }
+
+    private func codexFollowUpPrompt(
+        question: String,
+        localAnalysis: RecordingAnalysis,
+        existingFeedback: String,
+        conversation: [CoachConversationMessage]
+    ) -> String {
+        let substitutions = (localAnalysis.substitutions ?? [])
+            .map { "\($0.spoken) -> \($0.expected)" }
+            .joined(separator: ", ")
+        let previousConversation = conversation.dropLast().suffix(8).map { message in
+            "\(message.role == .user ? "Learner" : "Coach"): \(message.text)"
+        }
+        .joined(separator: "\n")
+        let evidence = localAnalysis.issueHints.prefix(6).joined(separator: "\n")
+
+        return """
+        You are continuing a focused English shadowing conversation with a Chinese native speaker.
+        Answer only the learner's latest question. Do not regenerate the full report unless explicitly asked. Use concise, natural Chinese, with English examples where useful. Avoid tables, greetings, and generic encouragement.
+
+        Evidence for this exact recording:
+        - Reference words: \(WordDiffEngine.comparisonText(localAnalysis.referenceText))
+        - Recognized learner words: \(WordDiffEngine.comparisonText(localAnalysis.transcript))
+        - Word recall: \(Int(localAnalysis.accuracy.rounded()))/100
+        - Reference words not recognized: \(localAnalysis.missingWords.joined(separator: ", "))
+        - Additional recognized words: \(localAnalysis.extraWords.joined(separator: ", "))
+        - Substitutions: \(substitutions.isEmpty ? "none" : substitutions)
+        - Other available evidence:
+        \(evidence.isEmpty ? "none" : evidence)
+
+        Existing coach feedback:
+        \(CoachFeedbackSanitizer.clean(existingFeedback).isEmpty ? "none" : CoachFeedbackSanitizer.clean(existingFeedback))
+
+        Previous conversation:
+        \(previousConversation.isEmpty ? "none" : previousConversation)
+
+        Latest learner question:
+        \(question)
+
+        Hard limits:
+        - Punctuation and capitalization are not speech evidence and must never be treated as recall errors.
+        - Transcript evidence can be wrong. Distinguish a likely ASR error from a confirmed learner error.
+        - You cannot hear the audio. Discuss pronunciation, stress, or rhythm only when the supplied evidence supports it.
+        - When comparing two expressions, explain meaning, grammar, collocation, register, and why one fits this exact sentence better.
+        - Usually answer in 80-220 Chinese characters. Give a short drill only when useful or requested.
         """
     }
 
@@ -2024,6 +2776,25 @@ struct RecordingAttempt: Identifiable, Codable, Hashable {
     var analysisCache: RecordingAnalysisCache? = nil
 }
 
+struct CoachConversationMessage: Identifiable, Codable, Hashable {
+    enum Role: String, Codable {
+        case user
+        case assistant
+    }
+
+    let id: UUID
+    let role: Role
+    let text: String
+    let createdAt: Date
+
+    init(id: UUID = UUID(), role: Role, text: String, createdAt: Date = Date()) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.createdAt = createdAt
+    }
+}
+
 struct RecordingAnalysisCache: Codable, Hashable {
     let createdAt: Date
     let localAnalysis: RecordingAnalysis
@@ -2031,19 +2802,34 @@ struct RecordingAnalysisCache: Codable, Hashable {
     let geminiFeedback: String?
     let feedbackProvider: CoachFeedbackProvider?
     let usedAzureAssessment: Bool?
+    let usedProsodyAnalysis: Bool?
+    let usedAICoach: Bool?
+    let coachModel: String?
+    let transcriptModel: String?
+    var coachConversation: [CoachConversationMessage]?
 
     init(
         createdAt: Date,
         localAnalysis: RecordingAnalysis,
         geminiFeedback: String?,
         feedbackProvider: CoachFeedbackProvider? = nil,
-        usedAzureAssessment: Bool? = nil
+        usedAzureAssessment: Bool? = nil,
+        usedProsodyAnalysis: Bool? = nil,
+        usedAICoach: Bool? = nil,
+        coachModel: String? = nil,
+        transcriptModel: String? = nil,
+        coachConversation: [CoachConversationMessage]? = nil
     ) {
         self.createdAt = createdAt
         self.localAnalysis = localAnalysis
         self.geminiFeedback = geminiFeedback
         self.feedbackProvider = feedbackProvider
         self.usedAzureAssessment = usedAzureAssessment
+        self.usedProsodyAnalysis = usedProsodyAnalysis
+        self.usedAICoach = usedAICoach
+        self.coachModel = coachModel
+        self.transcriptModel = transcriptModel
+        self.coachConversation = coachConversation
     }
 }
 
@@ -2064,6 +2850,7 @@ struct TimedWord: Identifiable, Codable, Hashable {
 
 enum WordDiffStatus: String, Codable, Hashable {
     case matched
+    case substituted
     case missing
     case extra
 }
@@ -2072,20 +2859,45 @@ struct WordDiffItem: Identifiable, Codable, Hashable {
     let id = UUID()
     let text: String
     let status: WordDiffStatus
+    let counterpartText: String?
+
+    init(text: String, status: WordDiffStatus, counterpartText: String? = nil) {
+        self.text = text
+        self.status = status
+        self.counterpartText = counterpartText
+    }
 
     enum CodingKeys: String, CodingKey {
         case text
         case status
+        case counterpartText
+    }
+}
+
+struct WordSubstitution: Identifiable, Codable, Hashable {
+    let id = UUID()
+    let expected: String
+    let spoken: String
+
+    enum CodingKeys: String, CodingKey {
+        case expected
+        case spoken
     }
 }
 
 struct RecordingAnalysis: Codable, Hashable {
     let referenceText: String
+    let sourceTitle: String?
+    let referenceHasSourceAudio: Bool?
+    let referenceQuality: ImportQuality?
+    let contextBefore: String?
+    let contextAfter: String?
     let transcript: String
     let accuracy: Double
     let items: [WordDiffItem]
     let missingWords: [String]
     let extraWords: [String]
+    let substitutions: [WordSubstitution]?
     let issueHints: [String]
     let whisperXRawJSON: String?
     let azure: AzurePronunciationAnalysis?
@@ -2094,16 +2906,31 @@ struct RecordingAnalysis: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case referenceText
+        case sourceTitle
+        case referenceHasSourceAudio = "reference_has_source_audio"
+        case referenceQuality = "reference_quality"
+        case contextBefore
+        case contextAfter
         case transcript
         case accuracy
         case items
         case missingWords
         case extraWords
+        case substitutions
         case issueHints
         case whisperXRawJSON = "whisperx_raw_json"
         case azure
         case pronunciationIssues = "pronunciation_issues"
         case prosody
+    }
+}
+
+extension RecordingAnalysis {
+    var isPerfectWordRecall: Bool {
+        accuracy >= 99.5
+            && missingWords.isEmpty
+            && extraWords.isEmpty
+            && (substitutions?.isEmpty ?? true)
     }
 }
 
@@ -2244,6 +3071,11 @@ struct DetailedTranscript {
 }
 
 enum WordDiffEngine {
+    private struct ComparisonWord {
+        let text: String
+        let normalized: String
+    }
+
     static func tokenize(_ text: String) -> [TimedWord] {
         words(in: text)
             .map { word in
@@ -2252,88 +3084,346 @@ enum WordDiffEngine {
             .filter { !$0.normalized.isEmpty }
     }
 
-    static func analyze(targetWords: [TimedWord], userWords: [TimedWord]) -> (accuracy: Double, items: [WordDiffItem], missingWords: [String], extraWords: [String]) {
-        let target = targetWords.map(\.normalized)
-        let user = userWords.map(\.normalized)
-        let matches = lcsPairs(target, user)
-        let matchedTargetIndexes = Set(matches.map(\.0))
-        let matchedUserIndexes = Set(matches.map(\.1))
+    static func spokenText(_ text: String) -> String {
+        tokenize(text).map(\.text).joined(separator: " ")
+    }
+
+    static func comparisonText(_ text: String) -> String {
+        comparisonWords(from: tokenize(text)).map(\.normalized).joined(separator: " ")
+    }
+
+    private enum AlignmentStep {
+        case matched(target: Int, user: Int)
+        case substituted(target: Int, user: Int)
+        case missing(target: Int)
+        case extra(user: Int)
+    }
+
+    static func analyze(targetWords: [TimedWord], userWords: [TimedWord]) -> (accuracy: Double, items: [WordDiffItem], missingWords: [String], extraWords: [String], substitutions: [WordSubstitution]) {
+        let targetUnits = comparisonWords(from: targetWords)
+        let userUnits = comparisonWords(from: userWords)
+        let target = targetUnits.map(\.normalized)
+        let user = userUnits.map(\.normalized)
+        let steps = alignmentSteps(target, user)
 
         var items: [WordDiffItem] = []
-        var lastUserIndex = -1
-        for targetIndex in targetWords.indices {
-            if let pair = matches.first(where: { $0.0 == targetIndex }) {
-                for extraIndex in (lastUserIndex + 1)..<pair.1 where extraIndex >= 0 && !matchedUserIndexes.contains(extraIndex) {
-                    items.append(WordDiffItem(text: userWords[extraIndex].text, status: .extra))
-                }
-                items.append(WordDiffItem(text: targetWords[targetIndex].text, status: .matched))
-                lastUserIndex = pair.1
-            } else if !matchedTargetIndexes.contains(targetIndex) {
-                items.append(WordDiffItem(text: targetWords[targetIndex].text, status: .missing))
-            }
-        }
-        if lastUserIndex + 1 < userWords.count {
-            for extraIndex in (lastUserIndex + 1)..<userWords.count where !matchedUserIndexes.contains(extraIndex) {
-                items.append(WordDiffItem(text: userWords[extraIndex].text, status: .extra))
+        var missingWords: [String] = []
+        var extraWords: [String] = []
+        var substitutions: [WordSubstitution] = []
+        var matchedCount = 0
+        for step in steps {
+            switch step {
+            case let .matched(targetIndex, userIndex):
+                matchedCount += 1
+                items.append(WordDiffItem(
+                    text: targetUnits[targetIndex].text,
+                    status: .matched,
+                    counterpartText: userUnits[userIndex].text
+                ))
+            case let .substituted(targetIndex, userIndex):
+                let substitution = WordSubstitution(
+                    expected: targetUnits[targetIndex].text,
+                    spoken: userUnits[userIndex].text
+                )
+                substitutions.append(substitution)
+                items.append(WordDiffItem(
+                    text: substitution.expected,
+                    status: .substituted,
+                    counterpartText: substitution.spoken
+                ))
+            case let .missing(targetIndex):
+                missingWords.append(targetUnits[targetIndex].text)
+                items.append(WordDiffItem(text: targetUnits[targetIndex].text, status: .missing))
+            case let .extra(userIndex):
+                extraWords.append(userUnits[userIndex].text)
+                items.append(WordDiffItem(text: userUnits[userIndex].text, status: .extra))
             }
         }
 
-        let matchedCount = matches.count
-        let missingWords = targetWords.indices
-            .filter { !matchedTargetIndexes.contains($0) }
-            .map { targetWords[$0].text }
-        let extraWords = userWords.indices
-            .filter { !matchedUserIndexes.contains($0) }
-            .map { userWords[$0].text }
-        let denominator = max(targetWords.count, 1)
-        let penalty = Double(missingWords.count) + Double(extraWords.count) * 0.6
+        let denominator = max(targetUnits.count, 1)
+        let penalty = Double(missingWords.count)
+            + Double(extraWords.count) * 0.6
+            + Double(substitutions.count) * 1.6
         let accuracy = max(0, min(100, (Double(matchedCount) - penalty * 0.35) / Double(denominator) * 100))
-        return (accuracy, items, missingWords, extraWords)
+        return (accuracy, items, missingWords, extraWords, substitutions)
     }
 
     static func normalize(_ word: String) -> String {
-        word.lowercased()
+        let cleaned = word.lowercased()
             .replacingOccurrences(of: #"[^a-z0-9']"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "'"))
+        if let number = cardinalNumberWords[cleaned] ?? scaleNumberWords[cleaned] {
+            return String(number)
+        }
+        return cleaned
+    }
+
+    private static let cardinalNumberWords: [String: Int] = [
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+        "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+        "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+        "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+        "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30,
+        "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+        "eighty": 80, "ninety": 90
+    ]
+
+    private static let scaleNumberWords: [String: Int] = [
+        "hundred": 100,
+        "thousand": 1_000,
+        "million": 1_000_000,
+        "billion": 1_000_000_000
+    ]
+
+    // Speech recognizers legitimately vary between closed, open, and hyphenated
+    // compounds. Keep that spelling choice out of the recall score.
+    private static let compoundAliases: [String: String] = [
+        "on site": "onsite",
+        "check point": "checkpoint",
+        "check points": "checkpoints"
+    ]
+
+    private static func comparisonWords(from words: [TimedWord]) -> [ComparisonWord] {
+        var result: [ComparisonWord] = []
+        var index = 0
+
+        while index < words.count {
+            if index + 1 < words.count {
+                let phraseKey = "\(words[index].normalized) \(words[index + 1].normalized)"
+                if let canonical = compoundAliases[phraseKey] {
+                    result.append(ComparisonWord(
+                        text: "\(words[index].text) \(words[index + 1].text)",
+                        normalized: canonical
+                    ))
+                    index += 2
+                    continue
+                }
+            }
+
+            if let phrase = numberPhrase(startingAt: index, in: words) {
+                result.append(ComparisonWord(text: phrase.text, normalized: String(phrase.value)))
+                index = phrase.endIndex
+            } else {
+                result.append(ComparisonWord(text: words[index].text, normalized: words[index].normalized))
+                index += 1
+            }
+        }
+        return result
+    }
+
+    private static func numberPhrase(startingAt start: Int, in words: [TimedWord]) -> (text: String, value: Int, endIndex: Int)? {
+        guard words.indices.contains(start) else { return nil }
+        var tokens: [String] = []
+        var end = start
+        var containsNumberWord = false
+        var containsScale = false
+
+        while end < words.count {
+            let token = lexicalToken(words[end].text)
+            if cardinalNumberWords[token] != nil {
+                tokens.append(token)
+                containsNumberWord = true
+                end += 1
+            } else if scaleNumberWords[token] != nil {
+                tokens.append(token)
+                containsNumberWord = true
+                containsScale = true
+                end += 1
+            } else if Int(token) != nil {
+                tokens.append(token)
+                end += 1
+            } else if token == "and",
+                      !tokens.isEmpty,
+                      end + 1 < words.count,
+                      isNumberToken(lexicalToken(words[end + 1].text)) {
+                tokens.append(token)
+                end += 1
+            } else {
+                break
+            }
+        }
+
+        guard !tokens.isEmpty else { return nil }
+        if tokens.count > 1, !containsNumberWord, !containsScale {
+            end = start + 1
+            tokens = [tokens[0]]
+        }
+        guard let value = parseNumberPhrase(tokens) else { return nil }
+        let text = words[start..<end].map(\.text).joined(separator: " ")
+        return (text, value, end)
+    }
+
+    private static func parseNumberPhrase(_ tokens: [String]) -> Int? {
+        let meaningful = tokens.filter { $0 != "and" }
+        guard !meaningful.isEmpty else { return nil }
+
+        if meaningful.count > 1,
+           meaningful.allSatisfy({ token in
+               guard let value = cardinalNumberWords[token] else { return false }
+               return value <= 9
+           }) {
+            return Int(meaningful.compactMap { cardinalNumberWords[$0] }.map(String.init).joined())
+        }
+
+        let hasScale = meaningful.contains { scaleNumberWords[$0] != nil }
+        if !hasScale,
+           meaningful.count >= 2,
+           let first = cardinalNumberWords[meaningful[0]],
+           (10...99).contains(first) {
+            let remainder = meaningful.dropFirst().compactMap { cardinalNumberWords[$0] }.reduce(0, +)
+            if (10...99).contains(remainder) {
+                return first * 100 + remainder
+            }
+        }
+
+        var total = 0
+        var current = 0
+        for token in meaningful {
+            if let value = cardinalNumberWords[token] ?? Int(token) {
+                current += value
+            } else if let scale = scaleNumberWords[token] {
+                if scale == 100 {
+                    current = max(current, 1) * scale
+                } else {
+                    total += max(current, 1) * scale
+                    current = 0
+                }
+            } else {
+                return nil
+            }
+        }
+        return total + current
+    }
+
+    private static func isNumberToken(_ token: String) -> Bool {
+        cardinalNumberWords[token] != nil || scaleNumberWords[token] != nil || Int(token) != nil
+    }
+
+    private static func lexicalToken(_ word: String) -> String {
+        word.lowercased().replacingOccurrences(of: #"[^a-z0-9]"#, with: "", options: .regularExpression)
     }
 
     private static func words(in text: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"[A-Za-z0-9]+(?:'[A-Za-z]+)?"#) else { return [] }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.matches(in: text, range: range).compactMap { match in
-            guard let wordRange = Range(match.range, in: text) else { return nil }
-            return String(text[wordRange])
+        guard let regex = try? NSRegularExpression(
+            pattern: #"[0-9]{1,3}(?:,[0-9]{3})+|[A-Za-z0-9]+(?:'[A-Za-z]+)?"#
+        ) else { return [] }
+        let searchable = text
+            .replacingOccurrences(of: "’", with: "'")
+            .replacingOccurrences(of: "‘", with: "'")
+        let range = NSRange(searchable.startIndex..<searchable.endIndex, in: searchable)
+        return regex.matches(in: searchable, range: range).compactMap { match in
+            guard let wordRange = Range(match.range, in: searchable) else { return nil }
+            return String(searchable[wordRange])
         }
     }
 
-    private static func lcsPairs(_ target: [String], _ user: [String]) -> [(Int, Int)] {
-        guard !target.isEmpty, !user.isEmpty else { return [] }
+    private static func alignmentSteps(_ target: [String], _ user: [String]) -> [AlignmentStep] {
         var dp = Array(repeating: Array(repeating: 0, count: user.count + 1), count: target.count + 1)
+        for index in target.indices {
+            dp[index][user.count] = target.count - index
+        }
+        for index in user.indices {
+            dp[target.count][index] = user.count - index
+        }
         for i in stride(from: target.count - 1, through: 0, by: -1) {
             for j in stride(from: user.count - 1, through: 0, by: -1) {
                 if target[i] == user[j] {
-                    dp[i][j] = dp[i + 1][j + 1] + 1
+                    dp[i][j] = dp[i + 1][j + 1]
                 } else {
-                    dp[i][j] = max(dp[i + 1][j], dp[i][j + 1])
+                    dp[i][j] = 1 + min(dp[i + 1][j + 1], dp[i + 1][j], dp[i][j + 1])
                 }
             }
         }
 
-        var pairs: [(Int, Int)] = []
+        var steps: [AlignmentStep] = []
         var i = 0
         var j = 0
         while i < target.count && j < user.count {
             if target[i] == user[j] {
-                pairs.append((i, j))
+                steps.append(.matched(target: i, user: j))
                 i += 1
                 j += 1
-            } else if dp[i + 1][j] >= dp[i][j + 1] {
+                continue
+            }
+
+            let substitutionCost = dp[i + 1][j + 1]
+            let missingCost = dp[i + 1][j]
+            let extraCost = dp[i][j + 1]
+            if substitutionCost < missingCost && substitutionCost < extraCost {
+                steps.append(.substituted(target: i, user: j))
+                i += 1
+                j += 1
+            } else if missingCost <= extraCost {
+                steps.append(.missing(target: i))
                 i += 1
             } else {
+                steps.append(.extra(user: j))
                 j += 1
             }
         }
-        return pairs
+        while i < target.count {
+            steps.append(.missing(target: i))
+            i += 1
+        }
+        while j < user.count {
+            steps.append(.extra(user: j))
+            j += 1
+        }
+        return steps
+    }
+}
+
+enum CoachFeedbackSanitizer {
+    private static let forbiddenTerms = [
+        "标点", "逗号", "句号", "问号", "冒号", "分号", "感叹号", "引号", "大小写",
+        "punctuation", "comma", "full stop", "question mark", "semicolon", "capitalization",
+        "capitalisation", "uppercase", "lowercase"
+    ]
+
+    static func clean(_ feedback: String) -> String {
+        guard !feedback.isEmpty else { return feedback }
+        let cleanedLines = feedback.components(separatedBy: .newlines).compactMap { rawLine -> String? in
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return "" }
+            if trimmed.hasPrefix("#") { return trimmed }
+
+            let fragments = sentenceFragments(in: trimmed)
+                .filter { !containsForbiddenTerm($0) }
+            let cleaned = fragments.joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.isEmpty ? nil : cleaned
+        }
+
+        return cleanedLines
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func containsForbiddenTerm(_ text: String) -> Bool {
+        let lowercased = text.lowercased()
+        return forbiddenTerms.contains { lowercased.contains($0) }
+    }
+
+    private static func sentenceFragments(in line: String) -> [String] {
+        let characters = Array(line)
+        var fragments: [String] = []
+        var current = ""
+
+        for index in characters.indices {
+            let character = characters[index]
+            current.append(character)
+            let isTerminal = "。！？!?".contains(character)
+                || (character == "." && (index == characters.index(before: characters.endIndex) || characters[index + 1].isWhitespace))
+            if isTerminal {
+                fragments.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+                current = ""
+            }
+        }
+
+        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fragments.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return fragments
     }
 }
 
@@ -2533,10 +3623,10 @@ enum RecordingIssueBuilder {
             hints.append("末尾 be 被识别成 B：结尾元音需要更完整，不要只剩字母音。")
         }
         if !missingWords.isEmpty {
-            hints.append("漏读：\(missingWords.prefix(5).joined(separator: ", "))")
+            hints.append("未识别到：\(missingWords.prefix(5).joined(separator: ", "))（可能是漏词，也可能是识别误差）")
         }
         if !extraWords.isEmpty {
-            hints.append("多读/误识别：\(extraWords.prefix(5).joined(separator: ", "))")
+            hints.append("额外识别到：\(extraWords.prefix(5).joined(separator: ", "))")
         }
         if let azure, azure.enabled, azure.error == nil {
             if let completeness = azure.completeness, completeness < 80 {
@@ -3426,7 +4516,126 @@ enum WhisperKitTranscriber {
     }
 }
 
+enum SpeechRecognitionHints {
+    private static let knownTerms: [String] = [
+        "AGV", "AMR", "LiDAR", "LM174", "MID360", "PAT", "RoboShop", "WhisperX"
+    ]
+
+    private static let contextualPhraseHints: [(pattern: String, terms: [String])] = [
+        (#"\bon(?:[\s-]+)?site\b"#, ["on-site", "onsite"]),
+        (#"\bcheck(?:[\s-]+)?points?\b"#, ["checkpoint", "checkpoints"])
+    ]
+
+    static func terms(in referenceText: String) -> [String] {
+        let tokens = referenceText
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        let knownByLowercase = Dictionary(
+            uniqueKeysWithValues: knownTerms.map { ($0.lowercased(), $0) }
+        )
+        var seen = Set<String>()
+        var result: [String] = []
+
+        for token in tokens {
+            let lowercase = token.lowercased()
+            let containsLetter = token.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+            let containsDigit = token.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
+            let isAcronym = token.count > 1
+                && containsLetter
+                && token == token.uppercased()
+            let canonical = knownByLowercase[lowercase]
+                ?? ((containsLetter && containsDigit) || isAcronym ? token : nil)
+            guard let canonical, seen.insert(canonical.lowercased()).inserted else { continue }
+            result.append(canonical)
+        }
+
+        for hint in contextualPhraseHints {
+            guard referenceText.range(of: hint.pattern, options: [.regularExpression, .caseInsensitive]) != nil else {
+                continue
+            }
+            for term in hint.terms where seen.insert(term.lowercased()).inserted {
+                result.append(term)
+            }
+        }
+        return result
+    }
+}
+
+enum FastWhisperTranscriber {
+    static let modelName = "small"
+    static let cacheIdentifier = "faster-whisper-small-contextual-hints-v2"
+
+    private struct FastTranscriptJSON: Decodable {
+        struct Segment: Decodable {
+            let text: String
+            let start: Double
+            let end: Double
+        }
+
+        let transcript: String
+        let segments: [Segment]
+    }
+
+    static func transcribeDetailed(_ mediaURL: URL, referenceText: String = "") async throws -> DetailedTranscript {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ShadowCoach Fast Transcript \(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let python = ProcessInfo.processInfo.environment["SHADOW_COACH_PYTHON"]
+            ?? "\(NSHomeDirectory())/.local/share/shadowcoach-whisperx-venv/bin/python"
+        let scriptURL = fastTranscriptScriptURL()
+        var arguments = [
+            python,
+            scriptURL.path,
+            "--audio", mediaURL.path,
+            "--output", outputURL.path,
+            "--model", modelName
+        ]
+        let recognitionHints = SpeechRecognitionHints.terms(in: referenceText)
+        if !recognitionHints.isEmpty {
+            arguments += ["--hotwords", recognitionHints.joined(separator: ", ")]
+        }
+
+        let output = try CommandRunner.run(
+            executable: "/usr/bin/env",
+            arguments: arguments,
+            environment: [
+                "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/sbin:/usr/local/sbin"
+            ]
+        )
+        if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ImportLogger.write("fast-whisper output \(output.suffix(1000))")
+        }
+
+        let data = try Data(contentsOf: outputURL)
+        let decoded = try JSONDecoder().decode(FastTranscriptJSON.self, from: data)
+        let transcript = decoded.transcript
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else {
+            throw NSError(domain: "FastWhisperTranscriber", code: -1, userInfo: [NSLocalizedDescriptionKey: "The fast local recognizer returned an empty transcript"])
+        }
+        return DetailedTranscript(
+            transcript: transcript,
+            words: [],
+            rawJSON: String(data: data, encoding: .utf8)
+        )
+    }
+
+    private static func fastTranscriptScriptURL() -> URL {
+        if let bundled = Bundle.main.url(forResource: "fast_transcribe", withExtension: "py") {
+            return bundled
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/fast_transcribe.py")
+    }
+}
+
 enum WhisperXTranscriber {
+    static let modelName = "small"
+    static let alignedCacheIdentifier = "whisperx-small-aligned-contextual-hints-v2"
+    static let unalignedCacheIdentifier = "whisperx-small-contextual-hints-v2"
+
     private struct WhisperXJSON: Decodable {
         struct Segment: Decodable {
             struct Word: Decodable {
@@ -3456,7 +4665,7 @@ enum WhisperXTranscriber {
 
         let arguments = Array(commandParts.dropFirst()) + [
             mediaURL.path,
-            "--model", "tiny.en",
+            "--model", modelName,
             "--language", "en",
             "--device", "cpu",
             "--compute_type", "int8",
@@ -3486,7 +4695,11 @@ enum WhisperXTranscriber {
         return SubtitleSegmenter.segment(TimedSubtitleParser.parse(raw))
     }
 
-    static func transcribeDetailed(_ mediaURL: URL) async throws -> DetailedTranscript {
+    static func transcribeDetailed(
+        _ mediaURL: URL,
+        alignWords: Bool = true,
+        referenceText: String = ""
+    ) async throws -> DetailedTranscript {
         let reportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ShadowCoach WhisperX \(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: reportDirectory, withIntermediateDirectories: true)
@@ -3498,9 +4711,9 @@ enum WhisperXTranscriber {
             throw NSError(domain: "WhisperXTranscriber", code: -1, userInfo: [NSLocalizedDescriptionKey: "WhisperX command is empty"])
         }
 
-        let arguments = Array(commandParts.dropFirst()) + [
+        var arguments = Array(commandParts.dropFirst()) + [
             mediaURL.path,
-            "--model", "tiny.en",
+            "--model", modelName,
             "--language", "en",
             "--device", "cpu",
             "--compute_type", "int8",
@@ -3509,6 +4722,13 @@ enum WhisperXTranscriber {
             "--verbose", "False",
             "--print_progress", "False"
         ]
+        if !alignWords {
+            arguments.append("--no_align")
+        }
+        let recognitionHints = SpeechRecognitionHints.terms(in: referenceText)
+        if !recognitionHints.isEmpty {
+            arguments += ["--hotwords", recognitionHints.joined(separator: ", ")]
+        }
 
         let output = try CommandRunner.run(
             executable: "/usr/bin/env",
@@ -4287,7 +5507,38 @@ struct GeminiResponse: Decodable {
 }
 
 enum CodexFeedbackClient {
-    static func run(prompt: String) async throws -> String {
+    static let coachingModel = "gpt-5.6-terra"
+    static let coachingReasoningEffort = "none"
+
+    static func run(
+        prompt: String,
+        model: String? = nil,
+        reasoningEffort: String? = nil,
+        onPartial: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        if let model, !model.isEmpty {
+            do {
+                let startedAt = Date()
+                let result = try await CodexAppServerClient.shared.run(
+                    prompt: prompt,
+                    model: model,
+                    reasoningEffort: reasoningEffort ?? coachingReasoningEffort,
+                    onPartial: onPartial
+                )
+                ImportLogger.write("codex persistent done model=\(model) seconds=\(String(format: "%.2f", Date().timeIntervalSince(startedAt)))")
+                return result
+            } catch {
+                ImportLogger.write("codex persistent failed; using exec fallback: \(error.localizedDescription)")
+            }
+        }
+        return try await runExec(prompt: prompt, model: model, reasoningEffort: reasoningEffort)
+    }
+
+    private static func runExec(
+        prompt: String,
+        model: String?,
+        reasoningEffort: String?
+    ) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let outputURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("shadowcoach-codex-\(UUID().uuidString).txt")
@@ -4306,6 +5557,22 @@ enum CodexFeedbackClient {
             process.executableURL = URL(fileURLWithPath: executable)
             var arguments = [
                 "exec",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--disable", "plugins",
+                "--disable", "apps",
+                "--disable", "remote_plugin",
+                "--disable", "skill_search",
+                "--disable", "multi_agent",
+                "--cd", FileManager.default.temporaryDirectory.path
+            ]
+            if let model, !model.isEmpty {
+                arguments += ["--model", model]
+            }
+            if let reasoningEffort, !reasoningEffort.isEmpty {
+                arguments += ["--config", "model_reasoning_effort=\"\(reasoningEffort)\""]
+            }
+            arguments += [
                 "--sandbox", "read-only",
                 "--skip-git-repo-check",
                 "--ephemeral",
@@ -4378,7 +5645,7 @@ enum CodexFeedbackClient {
         }.value
     }
 
-    private static func codexExecutablePath() -> String {
+    fileprivate static func codexExecutablePath() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [
             "/usr/local/bin/codex",
@@ -4388,11 +5655,328 @@ enum CodexFeedbackClient {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env"
     }
 
-    private static func processEnvironment() -> [String: String] {
+    fileprivate static func processEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         environment["PATH"] = "\(home)/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/opt/homebrew/sbin:/usr/local/sbin"
         return environment
+    }
+}
+
+final class CodexAppServerClient: @unchecked Sendable {
+    static let shared = CodexAppServerClient()
+
+    private let requestQueue = DispatchQueue(label: "com.shadowcoach.codex-app-server", qos: .userInitiated)
+    private let messageLock = NSLock()
+    private let messageSemaphore = DispatchSemaphore(value: 0)
+    private var messages: [[String: Any]] = []
+    private var outputBuffer = Data()
+    private var process: Process?
+    private var inputHandle: FileHandle?
+    private var outputHandle: FileHandle?
+    private var nextRequestID = 1
+
+    func run(
+        prompt: String,
+        model: String,
+        reasoningEffort: String,
+        onPartial: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            requestQueue.async {
+                do {
+                    continuation.resume(returning: try self.performTurn(
+                        prompt: prompt,
+                        model: model,
+                        reasoningEffort: reasoningEffort,
+                        onPartial: onPartial
+                    ))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func performTurn(
+        prompt: String,
+        model: String,
+        reasoningEffort: String,
+        onPartial: (@Sendable (String) -> Void)?
+    ) throws -> String {
+        do {
+            try ensureServerStarted()
+            let threadRequestID = requestID()
+            try send([
+                "jsonrpc": "2.0",
+                "id": threadRequestID,
+                "method": "thread/start",
+                "params": [
+                    "model": model,
+                    "cwd": FileManager.default.temporaryDirectory.path,
+                    "approvalPolicy": "never",
+                    "sandbox": "read-only",
+                    "ephemeral": true,
+                    "baseInstructions": "You are a text-only English shadowing coach. Never use tools or inspect files. Return only the answer requested by the user.",
+                    "developerInstructions": "Follow the requested output structure exactly. Be concise, practical, and do not overclaim.",
+                    "dynamicTools": [],
+                    "environments": [],
+                    "allowProviderModelFallback": false
+                ]
+            ])
+            let threadResponse = try waitForResponse(id: threadRequestID, timeout: 15)
+            guard let result = threadResponse["result"] as? [String: Any],
+                  let thread = result["thread"] as? [String: Any],
+                  let threadID = thread["id"] as? String else {
+                throw serverError("Codex app-server did not return a thread ID")
+            }
+
+            let turnRequestID = requestID()
+            try send([
+                "jsonrpc": "2.0",
+                "id": turnRequestID,
+                "method": "turn/start",
+                "params": [
+                    "threadId": threadID,
+                    "input": [["type": "text", "text": prompt]],
+                    "effort": reasoningEffort
+                ]
+            ])
+            return try waitForTurn(requestID: turnRequestID, timeout: 90, onPartial: onPartial)
+        } catch {
+            stopServer()
+            throw error
+        }
+    }
+
+    private func ensureServerStarted() throws {
+        if process?.isRunning == true, inputHandle != nil, outputHandle != nil {
+            return
+        }
+
+        stopServer()
+        resetMessages()
+
+        let server = Process()
+        let executable = CodexFeedbackClient.codexExecutablePath()
+        server.executableURL = URL(fileURLWithPath: executable)
+        var arguments = [
+            "app-server",
+            "--stdio",
+            "--disable", "plugins",
+            "--disable", "apps",
+            "--disable", "remote_plugin",
+            "--disable", "skill_search",
+            "--disable", "multi_agent"
+        ]
+        if executable == "/usr/bin/env" {
+            arguments.insert("codex", at: 0)
+        }
+        server.arguments = arguments
+        server.environment = CodexFeedbackClient.processEnvironment()
+
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        server.standardInput = inputPipe
+        server.standardOutput = outputPipe
+        server.standardError = FileHandle.nullDevice
+
+        process = server
+        inputHandle = inputPipe.fileHandleForWriting
+        outputHandle = outputPipe.fileHandleForReading
+        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                self?.enqueue(["_shadowCoachServerClosed": true])
+            } else {
+                self?.consumeOutput(data)
+            }
+        }
+
+        do {
+            try server.run()
+            let initializeRequestID = requestID()
+            try send([
+                "jsonrpc": "2.0",
+                "id": initializeRequestID,
+                "method": "initialize",
+                "params": [
+                    "clientInfo": [
+                        "name": "shadow-coach",
+                        "title": "Shadow Coach",
+                        "version": "1"
+                    ],
+                    "capabilities": ["experimentalApi": true]
+                ]
+            ])
+            _ = try waitForResponse(id: initializeRequestID, timeout: 15)
+            try send([
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": [:]
+            ])
+            ImportLogger.write("codex persistent server started pid=\(server.processIdentifier)")
+        } catch {
+            stopServer()
+            throw error
+        }
+    }
+
+    private func waitForResponse(id: Int, timeout: TimeInterval) throws -> [String: Any] {
+        let deadline = DispatchTime.now() + timeout
+        while true {
+            let message = try nextMessage(deadline: deadline)
+            if let responseID = message["id"] as? Int, responseID == id {
+                if let error = message["error"] {
+                    throw serverError("Codex app-server request failed: \(error)")
+                }
+                return message
+            }
+        }
+    }
+
+    private func waitForTurn(
+        requestID: Int,
+        timeout: TimeInterval,
+        onPartial: (@Sendable (String) -> Void)?
+    ) throws -> String {
+        let deadline = DispatchTime.now() + timeout
+        var answerParts: [String] = []
+        var streamedAnswer = ""
+        var lastPartialDelivery = Date.distantPast
+        while true {
+            let message = try nextMessage(deadline: deadline)
+            if let responseID = message["id"] as? Int, responseID == requestID,
+               let error = message["error"] {
+                throw serverError("Codex turn failed to start: \(error)")
+            }
+
+            if message["method"] as? String == "item/agentMessage/delta",
+               let params = message["params"] as? [String: Any],
+               let delta = params["delta"] as? String,
+               !delta.isEmpty {
+                streamedAnswer += delta
+                if Date().timeIntervalSince(lastPartialDelivery) >= 0.08 {
+                    onPartial?(streamedAnswer)
+                    lastPartialDelivery = Date()
+                }
+            }
+
+            if message["method"] as? String == "item/completed",
+               let params = message["params"] as? [String: Any],
+               let item = params["item"] as? [String: Any],
+               item["type"] as? String == "agentMessage",
+               let text = item["text"] as? String,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                answerParts = [text]
+            }
+
+            guard message["method"] as? String == "turn/completed",
+                  let params = message["params"] as? [String: Any],
+                  let turn = params["turn"] as? [String: Any] else {
+                continue
+            }
+
+            if turn["status"] as? String != "completed" {
+                throw serverError("Codex turn did not complete: \(turn["error"] ?? "unknown error")")
+            }
+            if answerParts.isEmpty, let items = turn["items"] as? [[String: Any]] {
+                answerParts = items.compactMap { item in
+                    guard item["type"] as? String == "agentMessage" else { return nil }
+                    return item["text"] as? String
+                }
+            }
+            let answer = (answerParts.isEmpty ? streamedAnswer : answerParts.joined(separator: "\n"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !answer.isEmpty else {
+                throw serverError("Codex app-server returned no feedback")
+            }
+            onPartial?(answer)
+            return answer
+        }
+    }
+
+    private func requestID() -> Int {
+        defer { nextRequestID += 1 }
+        return nextRequestID
+    }
+
+    private func send(_ message: [String: Any]) throws {
+        guard process?.isRunning == true, let inputHandle else {
+            throw serverError("Codex app-server is not running")
+        }
+        var data = try JSONSerialization.data(withJSONObject: message)
+        data.append(0x0A)
+        inputHandle.write(data)
+    }
+
+    private func nextMessage(deadline: DispatchTime) throws -> [String: Any] {
+        while true {
+            if messageSemaphore.wait(timeout: deadline) == .timedOut {
+                throw serverError("Codex app-server timed out")
+            }
+            messageLock.lock()
+            let message = messages.isEmpty ? nil : messages.removeFirst()
+            messageLock.unlock()
+            guard let message else { continue }
+            if message["_shadowCoachServerClosed"] as? Bool == true {
+                throw serverError("Codex app-server closed unexpectedly")
+            }
+            return message
+        }
+    }
+
+    private func consumeOutput(_ data: Data) {
+        var parsedMessages: [[String: Any]] = []
+        messageLock.lock()
+        outputBuffer.append(data)
+        while let newlineIndex = outputBuffer.firstIndex(of: 0x0A) {
+            let line = Data(outputBuffer[..<newlineIndex])
+            outputBuffer.removeSubrange(outputBuffer.startIndex...newlineIndex)
+            guard !line.isEmpty,
+                  let object = try? JSONSerialization.jsonObject(with: line),
+                  let message = object as? [String: Any] else {
+                continue
+            }
+            parsedMessages.append(message)
+        }
+        messages.append(contentsOf: parsedMessages)
+        messageLock.unlock()
+        for _ in parsedMessages {
+            messageSemaphore.signal()
+        }
+    }
+
+    private func enqueue(_ message: [String: Any]) {
+        messageLock.lock()
+        messages.append(message)
+        messageLock.unlock()
+        messageSemaphore.signal()
+    }
+
+    private func resetMessages() {
+        messageLock.lock()
+        messages.removeAll()
+        outputBuffer.removeAll(keepingCapacity: true)
+        messageLock.unlock()
+        while messageSemaphore.wait(timeout: .now()) == .success {}
+    }
+
+    private func stopServer() {
+        outputHandle?.readabilityHandler = nil
+        try? inputHandle?.close()
+        try? outputHandle?.close()
+        if let process, process.isRunning {
+            process.terminate()
+        }
+        process = nil
+        inputHandle = nil
+        outputHandle = nil
+    }
+
+    private func serverError(_ message: String) -> NSError {
+        NSError(domain: "CodexAppServer", code: -1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
 
@@ -4442,10 +6026,20 @@ struct ContentView: View {
     @State private var libraryFilter: LibraryFilter = .all
     @State private var showingGeneratePack = false
     @State private var showProsodyCurves = false
+    @State private var showingAppSettings = false
+    @State private var settingsSection: AppSettingsSection = .appearance
+    @State private var showingPracticeStats = false
+    @State private var showingAllAttempts = false
+    @State private var hoveredAttemptID: UUID?
     @State private var sourceVisibleLimits: [String: Int] = [:]
     @State private var pendingLibraryDeletion: LibraryDeletionTarget?
+    @State private var isLibrarySearchEditing = false
+    @State private var coachQuestion = ""
     @AppStorage("isLibrarySidebarCollapsed") private var isLibrarySidebarCollapsed = false
     @AppStorage("isFeedbackSidebarCollapsed") private var isFeedbackSidebarCollapsed = false
+    @AppStorage("AppAppearance") private var appAppearanceRaw = AppAppearanceOption.system.rawValue
+    @AppStorage("FeedbackTextSize") private var feedbackTextSizeRaw = FeedbackTextSizeOption.large.rawValue
+    @AppStorage("PracticeTextSize") private var practiceTextSizeRaw = PracticeTextSizeOption.standard.rawValue
     @FocusState private var focusedInput: FocusedInput?
     private let levels = ["A2", "B1", "B2", "C1"]
 
@@ -4457,16 +6051,34 @@ struct ContentView: View {
         coach.importedLines + coach.generatedLines + PracticeLine.library
     }
 
+    private var appAppearance: AppAppearanceOption {
+        AppAppearanceOption(rawValue: appAppearanceRaw) ?? .system
+    }
+
+    private var feedbackTextSize: FeedbackTextSizeOption {
+        FeedbackTextSizeOption(rawValue: feedbackTextSizeRaw) ?? .large
+    }
+
+    private var practiceTextSize: PracticeTextSizeOption {
+        PracticeTextSizeOption(rawValue: practiceTextSizeRaw) ?? .standard
+    }
+
+    private var currentGroupLines: [PracticeLine] {
+        guard let source = coach.selectedLine?.source else { return visibleLines }
+        let lines = visibleLines.filter { $0.source == source }
+        return lines.isEmpty ? visibleLines : lines
+    }
+
     private var userSources: Set<String> {
         Set((coach.importedLines + coach.generatedLines).map(\.source))
     }
 
     private var selectedIndexText: String {
         guard let selectedLineID = coach.selectedLineID,
-              let index = visibleLines.firstIndex(where: { $0.id == selectedLineID }) else {
+              let index = currentGroupLines.firstIndex(where: { $0.id == selectedLineID }) else {
             return "No sentence selected"
         }
-        return "Sentence \(index + 1) of \(visibleLines.count)"
+        return "Sentence \(index + 1) of \(currentGroupLines.count)"
     }
 
     private var visibleSections: [LibrarySection] {
@@ -4494,8 +6106,12 @@ struct ContentView: View {
             }
         }
         .background(appBackground)
+        .preferredColorScheme(appAppearance.colorScheme)
         .sheet(isPresented: $showingGeneratePack) {
             generatePackSheet
+        }
+        .sheet(isPresented: $showingAppSettings) {
+            appSettingsSheet
         }
         .alert(item: $pendingLibraryDeletion) { target in
             Alert(
@@ -4509,6 +6125,8 @@ struct ContentView: View {
                         sourceVisibleLimits.removeValue(forKey: source)
                     case .line(let line):
                         coach.deleteLine(line)
+                    case .attempt(let attempt):
+                        coach.deleteAttempt(attempt)
                     }
                 },
                 secondaryButton: .cancel()
@@ -4524,9 +6142,16 @@ struct ContentView: View {
             expandSelectedSource()
             coach.hasRecording = FileManager.default.fileExists(atPath: coach.recordingURL.path)
             installKeyboardMonitor()
+            scheduleInitialFocusRelease()
         }
         .onChange(of: coach.selectedLineID) { _ in
             expandSelectedSource()
+            showingAllAttempts = false
+            hoveredAttemptID = nil
+            coachQuestion = ""
+        }
+        .onChange(of: coach.selectedAttemptRelativePathForAnalysis) { _ in
+            coachQuestion = ""
         }
         .onChange(of: coach.feedbackProvider) { provider in
             if provider == .gemini, coach.apiKey.isEmpty {
@@ -4545,24 +6170,66 @@ struct ContentView: View {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 {
+                releaseTextInputFocus()
+                return nil
+            }
+
+            let modifiers = shortcutModifiers(for: event)
+            if modifiers == .command,
+               event.charactersIgnoringModifiers?.lowercased() == "f" {
+                isLibrarySearchEditing = true
+                focusedInput = .librarySearch
+                return nil
+            }
+
+            let isActivelyEditingText = isTextInputFirstResponder()
+            let acceptsTextInput = focusedInput == .generationTopic
+                || focusedInput == .sentenceEditor
+                || focusedInput == .coachQuestion
+                || (focusedInput == .librarySearch && isLibrarySearchEditing)
+            if acceptsTextInput, isActivelyEditingText {
+                return event
+            }
+
+            // SwiftUI can leave either side of its focus bridge stale. Reconcile it
+            // before dispatching a global practice shortcut.
+            if focusedInput != nil {
+                focusedInput = nil
+            }
+            isLibrarySearchEditing = false
+            if isActivelyEditingText {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
+
+            guard let action = shortcutAction(for: event) else { return event }
+            if event.isARepeat {
+                switch action {
+                case .listen, .toggleRecord:
+                    return nil
+                default:
+                    break
+                }
+            }
+            coach.performShortcut(action, visibleLines: currentGroupLines)
+            return nil
+        }
+    }
+
+    private func releaseTextInputFocus() {
+        isLibrarySearchEditing = false
+        focusedInput = nil
+        DispatchQueue.main.async {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
+    }
+
+    private func scheduleInitialFocusRelease() {
+        for delay in [0.0, 0.2, 0.7] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard !isLibrarySearchEditing else { return }
                 focusedInput = nil
                 NSApp.keyWindow?.makeFirstResponder(nil)
-                return nil
             }
-            if isTextInputFirstResponder() {
-                return event
-            }
-            if focusedInput == .generationTopic, event.keyCode == 36 {
-                focusedInput = nil
-                return nil
-            }
-            if focusedInput != nil {
-                return event
-            }
-            guard let action = shortcutAction(for: event) else { return event }
-            focusedInput = nil
-            coach.performShortcut(action, visibleLines: visibleLines)
-            return nil
         }
     }
 
@@ -4571,8 +6238,14 @@ struct ContentView: View {
         return responder is NSTextView || responder is NSTextField
     }
 
+    private func shortcutModifiers(for event: NSEvent) -> NSEvent.ModifierFlags {
+        // Arrow keys carry .function/.numericPad flags on macOS even when the
+        // user presses no modifier. Only these four flags represent a chord.
+        event.modifierFlags.intersection([.command, .option, .control, .shift])
+    }
+
     private func shortcutAction(for event: NSEvent) -> ShortcutAction? {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let modifiers = shortcutModifiers(for: event)
         let isCommandOnly = modifiers == .command
         let noModifiers = modifiers.isEmpty
 
@@ -4587,26 +6260,21 @@ struct ContentView: View {
             case 124:
                 if isEditingTopic { return nil }
                 return .next
+            case 126:
+                if isEditingTopic { return nil }
+                return .listen
             case 49:
                 if isEditingTopic { return nil }
                 return .toggleRecord
             default:
                 guard !isEditingTopic, let characters = event.charactersIgnoringModifiers?.lowercased() else { return nil }
                 switch characters {
-                case "l":
-                    return .listen
-                case "r":
-                    return .toggleRecord
                 case "p":
                     return .playback
                 case "h":
                     return .reveal
                 case "f":
                     return .favorite
-                case "b":
-                    return .previous
-                case "n":
-                    return .next
                 default:
                     return nil
                 }
@@ -4743,6 +6411,15 @@ struct ContentView: View {
                 .background(Theme.pill)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
+
+            Button {
+                settingsSection = .appearance
+                showingAppSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(IconButtonStyle())
+            .help("Settings")
         }
     }
 
@@ -4889,6 +6566,15 @@ struct ContentView: View {
                     TextField("Search sentences, sources...", text: $librarySearch)
                         .textFieldStyle(.plain)
                         .focused($focusedInput, equals: .librarySearch)
+                        .simultaneousGesture(
+                            TapGesture().onEnded {
+                                isLibrarySearchEditing = true
+                                focusedInput = .librarySearch
+                            }
+                        )
+                        .onSubmit {
+                            releaseTextInputFocus()
+                        }
                     if !librarySearch.isEmpty {
                         Button {
                             librarySearch = ""
@@ -5074,6 +6760,11 @@ struct ContentView: View {
             return coach.practiceStore.favorites.contains(line.id)
         case .done:
             return coach.progress(for: line).practiceCount > 0
+        case .needsReview:
+            guard let score = coach.progress(for: line).attempts.first?.analysisCache?.localAnalysis.accuracy else {
+                return false
+            }
+            return score < 85
         case .new:
             return coach.progress(for: line).practiceCount == 0
         case .realAudio:
@@ -5322,7 +7013,7 @@ struct ContentView: View {
             if coach.isSentenceVisible {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        InteractiveSentenceView(text: coach.sentence)
+                        InteractiveSentenceView(text: coach.sentence, fontSize: practiceTextSize.pointSize)
                             .id(coach.selectedLineID)
 
                         if !coach.sentenceTranslation.isEmpty {
@@ -5417,16 +7108,16 @@ struct ContentView: View {
 
     private func actionRow(compact: Bool) -> some View {
         HStack(spacing: compact ? 8 : 10) {
-            actionButton(icon: "speaker.wave.2.fill", title: "Listen", shortcut: "L", color: Theme.primary, compact: compact) {
+            actionButton(icon: "speaker.wave.2.fill", title: "Listen", shortcut: "↑", color: Theme.primary, compact: compact) {
                 coach.speakSentence()
             }
 
-            actionButton(icon: coach.isRecording ? "stop.fill" : "mic.fill", title: coach.isRecording ? "Stop" : "Record", shortcut: "Space / R", color: coach.isRecording ? Theme.danger : Theme.success, compact: compact) {
+            actionButton(icon: coach.isRecording ? "stop.fill" : "mic.fill", title: coach.isRecording ? "Stop" : "Record", shortcut: "Space", color: coach.isRecording ? Theme.danger : Theme.success, compact: compact) {
                 coach.toggleRecording()
             }
 
-            actionButton(icon: "chevron.right", title: "Next", shortcut: "N / →", color: .gray, compact: compact) {
-                coach.chooseNext(in: visibleLines)
+            actionButton(icon: "chevron.right", title: "Next", shortcut: "→", color: .gray, compact: compact) {
+                coach.chooseNext(in: currentGroupLines)
             }
         }
     }
@@ -5569,11 +7260,14 @@ struct ContentView: View {
     }
 
     private var recordingPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let attempts = coach.currentProgress().attempts
+        let visibleAttempts = showingAllAttempts ? attempts : Array(attempts.prefix(5))
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
-                Image(systemName: coach.hasRecording ? "waveform.badge.checkmark" : "waveform")
+                Image(systemName: coach.isRecording ? "waveform.circle.fill" : (coach.hasRecording ? "waveform.badge.checkmark" : "waveform"))
                     .font(.title2)
-                    .foregroundStyle(coach.hasRecording ? Theme.success : .secondary)
+                    .foregroundStyle(coach.isRecording ? Theme.danger : (coach.hasRecording ? Theme.success : Color.secondary))
                     .frame(width: 34)
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -5587,65 +7281,55 @@ struct ContentView: View {
 
                 Spacer()
 
-                Button(action: coach.playRecording) {
-                    Image(systemName: "play.fill")
+                if coach.hasRecording && !coach.isRecording {
+                    Button(action: coach.playRecording) {
+                        Image(systemName: "play.fill")
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .help("Play latest recording")
                 }
-                .buttonStyle(IconButtonStyle())
-                .disabled(!coach.hasRecording || coach.isRecording)
-                .help("Play latest recording")
 
-                Button(action: coach.clearRecording) {
-                    Image(systemName: "trash")
+                if coach.hasRecording || coach.isRecording {
+                    Button(action: coach.discardCurrentRecording) {
+                        Image(systemName: coach.isRecording ? "xmark" : "trash")
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .help(coach.isRecording ? "Discard this recording" : "Delete the latest temporary recording")
                 }
-                .buttonStyle(IconButtonStyle())
-                .disabled(!coach.hasRecording && !coach.isRecording)
             }
 
-            if !coach.currentProgress().attempts.isEmpty {
+            if !attempts.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Saved Attempts")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ForEach(coach.currentProgress().attempts.prefix(5)) { attempt in
-                        HStack(spacing: 8) {
-                            Button {
-                                coach.playAttempt(attempt)
-                            } label: {
-                                HStack {
-                                    Image(systemName: "play.circle")
-                                    Text(formatAttempt(attempt))
-                                        .font(.caption)
-                                        .lineLimit(1)
-                                    if attempt.analysisCache != nil {
-                                        Image(systemName: "checkmark.seal.fill")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(Theme.success)
-                                            .help("Saved analysis available")
-                                    }
-                                    Spacer()
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                    HStack {
+                        Text("Saved Attempts")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(attempts.count)")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(visibleAttempts) { attempt in
+                        savedAttemptRow(attempt)
+                    }
 
-                            Button {
-                                coach.deleteAttempt(attempt)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Theme.danger)
-                                    .frame(width: 26, height: 24)
+                    if attempts.count > 5 {
+                        Button {
+                            withAnimation(.snappy(duration: 0.18)) {
+                                showingAllAttempts.toggle()
                             }
-                            .buttonStyle(.plain)
-                            .help("Delete this recording")
+                        } label: {
+                            Label(
+                                showingAllAttempts ? "Show Recent" : "Show All \(attempts.count)",
+                                systemImage: showingAllAttempts ? "chevron.up" : "chevron.down"
+                            )
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
                         }
-                        .padding(.vertical, 3)
-                        .overlay(alignment: .bottom) {
-                            Rectangle()
-                                .fill(Theme.border.opacity(0.55))
-                                .frame(height: 1)
-                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.primary)
                     }
                 }
             }
@@ -5655,7 +7339,110 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    private func savedAttemptRow(_ attempt: RecordingAttempt) -> some View {
+        let isSelected = coach.selectedAttemptRelativePathForAnalysis == attempt.relativePath
+        let isHovered = hoveredAttemptID == attempt.id
+        let score = attempt.analysisCache?.localAnalysis.accuracy
+
+        return HStack(spacing: 9) {
+            Button {
+                coach.playAttempt(attempt)
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(isSelected ? Color.white : Theme.primary)
+                    .frame(width: 27, height: 27)
+                    .background(isSelected ? Theme.primary : Theme.primary.opacity(0.11))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Play this recording")
+
+            Button {
+                coach.selectAttempt(attempt)
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(formatAttemptDate(attempt.date))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("\(formatAttemptDuration(attempt.duration)) · \(attempt.analysisCache == nil ? "Not analyzed" : "Analysis saved")")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 6)
+
+                    if let score {
+                        Text("\(Int(score.rounded()))%")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(scoreColor(score))
+                            .monospacedDigit()
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                pendingLibraryDeletion = .attempt(attempt)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.danger)
+                    .frame(width: 25, height: 25)
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovered || isSelected ? 1 : 0)
+            .accessibilityHidden(!(isHovered || isSelected))
+            .help("Delete this recording")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(
+            isSelected
+                ? Theme.primary.opacity(0.10)
+                : (isHovered ? Theme.panel.opacity(0.72) : Color.clear)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Theme.primary)
+                    .frame(width: 3)
+                    .padding(.vertical, 7)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            hoveredAttemptID = hovering ? attempt.id : nil
+        }
+        .contextMenu {
+            Button {
+                coach.selectAttempt(attempt)
+            } label: {
+                Label("Load Analysis", systemImage: "chart.bar.doc.horizontal")
+            }
+            Button {
+                coach.playAttempt(attempt)
+            } label: {
+                Label("Play Recording", systemImage: "play.fill")
+            }
+            Divider()
+            Button(role: .destructive) {
+                pendingLibraryDeletion = .attempt(attempt)
+            } label: {
+                Label("Delete Recording", systemImage: "trash")
+            }
+        }
+    }
+
     private var progressSummary: String {
+        if coach.isRecording {
+            return "Speak clearly, then press Space to stop"
+        }
         let progress = coach.currentProgress()
         if let last = progress.lastPracticedAt {
             return "\(progress.practiceCount) attempts, last \(last.formatted(date: .abbreviated, time: .shortened))"
@@ -5664,6 +7451,9 @@ struct ContentView: View {
     }
 
     private var recordingTitle: String {
+        if coach.isRecording {
+            return "Recording..."
+        }
         if coach.hasRecording {
             return "Recording Ready"
         }
@@ -5707,22 +7497,24 @@ struct ContentView: View {
     }
 
     private var feedbackPipelineSummary: String {
-        var parts = ["Transcript", "Rhythm"]
+        var parts = ["Whisper small"]
+        if coach.useProsodyAnalysis { parts.append("Rhythm") }
         if coach.useAzureAssessment { parts.append("Azure") }
-        parts.append(coach.feedbackProvider.label)
+        if coach.useAICoach { parts.append("Meaning: \(coach.feedbackProvider.label)") }
         return parts.joined(separator: " · ")
     }
 
     private var feedbackPanel: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Feedback")
-                            .font(.system(size: 22, weight: .semibold, design: .rounded))
+                            .font(scaledFeedbackFont(20, scale: feedbackTextSize.scale, weight: .semibold, design: .rounded))
                         Text(feedbackPipelineSummary)
-                            .font(.callout)
+                            .font(scaledFeedbackFont(11, scale: feedbackTextSize.scale))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
 
                     Spacer()
@@ -5733,6 +7525,15 @@ struct ContentView: View {
                     }
 
                     Button {
+                        settingsSection = .analysis
+                        showingAppSettings = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .help("Analysis settings")
+
+                    Button {
                         isFeedbackSidebarCollapsed = true
                     } label: {
                         Image(systemName: "sidebar.right")
@@ -5741,60 +7542,29 @@ struct ContentView: View {
                     .help("Collapse feedback")
                 }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Use Azure scoring", isOn: $coach.useAzureAssessment)
-                        .toggleStyle(.switch)
-                        .help("Optional paid pronunciation evidence: Azure word/phoneme scores, accuracy, fluency, completeness, and prosody.")
-
-                    Picker("AI Coach", selection: $coach.feedbackProvider) {
-                        ForEach(CoachFeedbackProvider.allCases) { provider in
-                            Text(provider.label).tag(provider)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    if coach.feedbackProvider == .gemini {
-                        HStack {
-                            SecureField("Gemini API key", text: $coach.apiKey)
-                                .textFieldStyle(.roundedBorder)
-
-                            Button(action: coach.saveApiKey) {
-                                Image(systemName: "key.fill")
-                            }
-                            .buttonStyle(IconButtonStyle())
-                            .help("Save Gemini API key")
-                        }
-                    } else {
-                        HStack(spacing: 8) {
-                            Image(systemName: "terminal")
-                                .foregroundStyle(.secondary)
-                            Text("Uses your local Codex CLI default model.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .disabled(coach.isAnalyzing)
-                .padding(12)
-                .background(subtleBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
                 Button {
                     coach.analyzeRecording(forceRefresh: true)
                 } label: {
-                    VStack(spacing: 3) {
-                        Label(coach.isAnalyzing ? "Analyzing" : "Analyze Recording", systemImage: "waveform.badge.magnifyingglass")
-                        if coach.isAnalyzing {
-                            Text(coach.status)
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(.white.opacity(0.82))
-                                .lineLimit(1)
-                        }
-                    }
+                    Label(
+                        coach.isAnalyzing ? "Analyzing..." : (coach.recordingAnalysis == nil ? "Analyze" : "Analyze Again"),
+                        systemImage: "waveform.badge.magnifyingglass"
+                    )
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryButtonStyle(color: Theme.accent))
                 .disabled(coach.isAnalyzing || coach.isRecording || coach.analysisRecordingURL == nil)
+
+                if coach.isAnalyzing {
+                    HStack(spacing: 7) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(coach.status)
+                            .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    .transition(.opacity)
+                }
 
                 if let recordingAnalysis = coach.recordingAnalysis {
                     recordingAnalysisPanel(recordingAnalysis)
@@ -5802,12 +7572,19 @@ struct ContentView: View {
 
                 if coach.analysis.isEmpty && coach.recordingAnalysis == nil {
                     VStack(spacing: 14) {
-                        Image(systemName: "quote.bubble")
+                        Image(systemName: coach.analysisRecordingURL == nil ? "mic" : "waveform.badge.magnifyingglass")
                             .font(.system(size: 38))
                             .foregroundStyle(Theme.accent.opacity(0.55))
-                        Text("Feedback will appear here")
-                            .font(.headline)
+                        Text(coach.analysisRecordingURL == nil ? "Record a sentence first" : "Ready to analyze")
+                            .font(scaledFeedbackFont(15, scale: feedbackTextSize.scale, weight: .semibold))
                             .foregroundStyle(.secondary)
+                        Text(coach.analysisRecordingURL == nil
+                             ? "Listen, record your answer, then come back here."
+                             : "Word comparison is local. Optional services run only when enabled.")
+                            .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: 140, maxHeight: 220)
@@ -5819,55 +7596,437 @@ struct ContentView: View {
                         .textSelection(.enabled)
                 }
 
-                statsPanel
+                if coach.recordingAnalysis != nil {
+                    codexFollowUpPanel
+                }
 
-                Text("Transcript and rhythm analysis run locally. Azure is used only when its switch is on.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                statsPanel
             }
             .padding(2)
         }
+        .environment(\.feedbackTextScale, feedbackTextSize.scale)
     }
 
-    private func recordingAnalysisPanel(_ result: RecordingAnalysis) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Local Analysis", systemImage: "checkmark.seal")
-                    .font(.headline)
+    private var codexFollowUpPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(scaledFeedbackFont(13, scale: feedbackTextSize.scale, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Ask Codex")
+                        .font(scaledFeedbackFont(14, scale: feedbackTextSize.scale, weight: .semibold))
+                    Text("Continue with this recording's evidence")
+                        .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Text("\(Int(result.accuracy.rounded()))%")
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .foregroundStyle(scoreColor(result.accuracy))
+                if coach.isAskingCodex {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
-            Text("Accuracy is based on WhisperX transcript matching: matched words, missing target words, and extra spoken words.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("WhisperX heard")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(result.transcript.isEmpty ? "No stable transcript" : result.transcript)
-                    .font(.callout)
-                    .textSelection(.enabled)
+            if coach.recordingAnalysis?.isPerfectWordRecall == true,
+               coach.coachConversation.isEmpty {
+                Label("100% word recall. Ask only if you want a deeper explanation.", systemImage: "checkmark.circle.fill")
+                    .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
+                    .foregroundStyle(Theme.success)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ForEach(coach.coachConversation) { message in
+                CoachConversationMessageView(message: message)
             }
 
             HStack(spacing: 8) {
+                TextField("Ask about wording, meaning, or memory...", text: $coachQuestion)
+                    .font(scaledFeedbackFont(13, scale: feedbackTextSize.scale))
+                    .textFieldStyle(.plain)
+                    .focused($focusedInput, equals: .coachQuestion)
+                    .onSubmit(sendCoachQuestion)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Theme.panel)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Theme.border)
+                    )
+
+                Button(action: sendCoachQuestion) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Theme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(coachQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || coach.isAskingCodex)
+                .opacity(coachQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || coach.isAskingCodex ? 0.45 : 1)
+                .help("Ask local Codex")
+            }
+        }
+        .padding(11)
+        .background(subtleBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func sendCoachQuestion() {
+        let question = coachQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty, !coach.isAskingCodex else { return }
+        coachQuestion = ""
+        releaseTextInputFocus()
+        coach.askCodex(question)
+    }
+
+    private var appSettingsSheet: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "gearshape.fill")
+                    .font(.title3)
+                    .foregroundStyle(Theme.primary)
+                Text("Settings")
+                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+                Spacer()
+                Button("Done") {
+                    showingAppSettings = false
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+
+            Picker("Settings section", selection: $settingsSection) {
+                ForEach(AppSettingsSection.allCases) { section in
+                    Label(section.label, systemImage: section.icon).tag(section)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+
+            Divider()
+
+            ScrollView {
+                settingsContent
+                    .padding(20)
+            }
+        }
+        .frame(width: 570, height: 520)
+        .background(Theme.appBackground)
+    }
+
+    @ViewBuilder
+    private var settingsContent: some View {
+        switch settingsSection {
+        case .appearance:
+            appearanceSettings
+        case .practice:
+            practiceSettings
+        case .analysis:
+            analysisSettings
+        }
+    }
+
+    private var appearanceSettings: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            settingsTitle("Appearance", icon: "paintbrush.fill")
+
+            settingsRow("Color theme", icon: "circle.lefthalf.filled") {
+                Picker("Color theme", selection: Binding(
+                    get: { appAppearance },
+                    set: { appAppearanceRaw = $0.rawValue }
+                )) {
+                    ForEach(AppAppearanceOption.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 260)
+            }
+            settingsDivider
+
+            settingsRow("Feedback text", icon: "sidebar.right") {
+                Picker("Feedback text", selection: Binding(
+                    get: { feedbackTextSize },
+                    set: { feedbackTextSizeRaw = $0.rawValue }
+                )) {
+                    ForEach(FeedbackTextSizeOption.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 260)
+            }
+            settingsDivider
+
+            settingsRow("Practice text", icon: "textformat.size") {
+                Picker("Practice text", selection: Binding(
+                    get: { practiceTextSize },
+                    set: { practiceTextSizeRaw = $0.rawValue }
+                )) {
+                    ForEach(PracticeTextSizeOption.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 260)
+            }
+        }
+    }
+
+    private var practiceSettings: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            settingsTitle("Practice", icon: "mic.fill")
+
+            settingsRow("TTS voice", icon: "person.wave.2") {
+                Picker("TTS voice", selection: $coach.selectedVoiceIdentifier) {
+                    ForEach(coach.englishVoices) { voice in
+                        Text(voice.displayName).tag(voice.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 260)
+            }
+            settingsDivider
+
+            settingsRow("TTS speed", icon: "speedometer") {
+                Picker("TTS speed", selection: $coach.speechRate) {
+                    Text("Slow").tag(135.0)
+                    Text("Calm").tag(155.0)
+                    Text("Normal").tag(175.0)
+                    Text("Fast").tag(200.0)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 260)
+            }
+            settingsDivider
+
+            settingsRow("Listen repeats", icon: "repeat") {
+                Stepper("\(coach.listenRepeats)x", value: $coach.listenRepeats, in: 1...5)
+                    .frame(width: 110)
+            }
+            settingsDivider
+
+            settingsRow("Auto record", icon: "record.circle") {
+                Toggle("Auto record", isOn: $coach.autoRecordAfterListen)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+            settingsDivider
+
+            settingsRow("Auto analyze", icon: "waveform.badge.magnifyingglass") {
+                Toggle("Auto analyze", isOn: $coach.autoAnalyzeAfterRecording)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+            settingsDivider
+
+            settingsRow("Require full recording", icon: "timer") {
+                Toggle("Require full recording", isOn: $coach.requireFullReferenceLength)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+        }
+    }
+
+    private var analysisSettings: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            settingsTitle("Analysis", icon: "waveform.badge.magnifyingglass")
+
+            settingsRow("Content comparison", icon: "text.badge.checkmark") {
+                Label("Always on", systemImage: "checkmark.circle.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Theme.success)
+            }
+            settingsDivider
+
+            settingsRow("Rhythm & pitch", icon: "metronome") {
+                Toggle("Rhythm & pitch", isOn: $coach.useProsodyAnalysis)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+            settingsDivider
+
+            settingsRow("Azure pronunciation", icon: "waveform.badge.magnifyingglass") {
+                Toggle("Azure pronunciation", isOn: $coach.useAzureAssessment)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+            settingsDivider
+
+            settingsRow("Meaning & memory", icon: "brain.head.profile") {
+                Toggle("Meaning & memory", isOn: $coach.useAICoach)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            if coach.useAICoach {
+                settingsDivider
+                settingsRow("Coach depth", icon: "text.alignleft") {
+                    Picker("Coach depth", selection: $coach.coachFeedbackDepth) {
+                        ForEach(CoachFeedbackDepth.allCases) { depth in
+                            Text(depth.label).tag(depth)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 260)
+                }
+
+                settingsDivider
+                settingsRow("AI coach", icon: "sparkles") {
+                    Picker("AI coach", selection: $coach.feedbackProvider) {
+                        ForEach(CoachFeedbackProvider.allCases) { provider in
+                            Text(provider.label).tag(provider)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 260)
+                }
+
+                settingsDivider
+                if coach.feedbackProvider == .gemini {
+                    settingsRow("Gemini key", icon: "key.fill") {
+                        HStack(spacing: 8) {
+                            SecureField("API key", text: $coach.apiKey)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 210)
+                            Button(action: coach.saveApiKey) {
+                                Image(systemName: "checkmark")
+                            }
+                            .buttonStyle(IconButtonStyle())
+                            .help("Save Gemini API key")
+                        }
+                    }
+                } else {
+                    settingsRow("Local model", icon: "bolt.fill") {
+                        Text("GPT-5.6 Terra")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .disabled(coach.isAnalyzing)
+    }
+
+    private func settingsTitle(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.system(.title3, design: .rounded).weight(.semibold))
+            .padding(.bottom, 14)
+    }
+
+    private func settingsRow<Control: View>(
+        _ title: String,
+        icon: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(Theme.primary)
+                .frame(width: 24)
+            Text(title)
+                .font(.body)
+            Spacer(minLength: 16)
+            control()
+        }
+        .frame(minHeight: 46)
+    }
+
+    private var settingsDivider: some View {
+        Divider()
+            .padding(.leading, 36)
+    }
+
+    private func recordingAnalysisPanel(_ result: RecordingAnalysis) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Recall Match", systemImage: "text.badge.checkmark")
+                    .font(scaledFeedbackFont(15, scale: feedbackTextSize.scale, weight: .semibold))
+                Spacer()
+                Text("WORDS ONLY")
+                    .font(scaledFeedbackFont(9, scale: feedbackTextSize.scale, weight: .bold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.pill)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                Image(systemName: "info.circle")
+                    .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
+                    .foregroundStyle(.secondary)
+                    .help("Compares recognized words only. Punctuation and capitalization are ignored. Recognition can be imperfect.")
+                Text("\(Int(result.accuracy.rounded()))%")
+                    .font(scaledFeedbackFont(22, scale: feedbackTextSize.scale, weight: .semibold, design: .rounded))
+                    .foregroundStyle(scoreColor(result.accuracy))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("System heard")
+                    .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(result.transcript.isEmpty ? "No stable transcript" : result.transcript)
+                    .font(scaledFeedbackFont(14, scale: feedbackTextSize.scale))
+                    .textSelection(.enabled)
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                alignment: .leading,
+                spacing: 7
+            ) {
                 diffLegend(label: "Matched", color: Theme.success, filled: true)
-                diffLegend(label: "Missing", color: Theme.danger, filled: true)
-                diffLegend(label: "Extra", color: Theme.danger, filled: false)
+                diffLegend(label: "Different", color: Theme.warning, filled: true)
+                diffLegend(label: "Not heard", color: Theme.danger, filled: true)
+                diffLegend(label: "Added", color: Theme.danger, filled: false)
             }
             VStack(alignment: .leading, spacing: 7) {
                 Text("Reference vs You")
-                    .font(.caption.weight(.semibold))
+                    .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .semibold))
                     .foregroundStyle(.secondary)
                 WordComparisonView(referenceText: result.referenceText, userText: result.transcript, items: result.items)
             }
             .padding(10)
             .background(Theme.panel.opacity(0.78))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if let substitutions = result.substitutions, !substitutions.isEmpty {
+                VStack(alignment: .leading, spacing: 9) {
+                    Label("Wording difference", systemImage: "arrow.left.arrow.right")
+                        .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(substitutions) { substitution in
+                        HStack(spacing: 8) {
+                            Text(substitution.spoken)
+                                .font(scaledFeedbackFont(14, scale: feedbackTextSize.scale, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Image(systemName: "arrow.right")
+                                .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .bold))
+                                .foregroundStyle(Theme.warning)
+
+                            Text(substitution.expected)
+                                .font(scaledFeedbackFont(14, scale: feedbackTextSize.scale, weight: .semibold))
+                                .foregroundStyle(Theme.warning)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(7)
+                        .background(Theme.warning.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                    }
+                }
+                .padding(10)
+                .background(Theme.panel.opacity(0.78))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
 
             if coach.useAzureAssessment, let azure = result.azure, azure.enabled {
                 AzurePronunciationPanel(analysis: azure, issues: result.pronunciationIssues ?? [])
@@ -5876,16 +8035,16 @@ struct ContentView: View {
             if !result.issueHints.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("What to fix")
-                        .font(.caption.weight(.semibold))
+                        .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .semibold))
                         .foregroundStyle(.secondary)
                     ForEach(result.issueHints, id: \.self) { hint in
                         HStack(alignment: .top, spacing: 7) {
                             Image(systemName: "exclamationmark.circle.fill")
-                                .font(.caption)
+                                .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
                                 .foregroundStyle(Theme.danger)
                                 .padding(.top, 1)
                             Text(hint)
-                                .font(.caption)
+                                .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -5899,7 +8058,7 @@ struct ContentView: View {
                 prosodyPanel(prosody)
             }
         }
-        .padding(14)
+        .padding(12)
         .background(subtleBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -5909,15 +8068,15 @@ struct ContentView: View {
             Divider()
             HStack {
                 Label("Rhythm Compare", systemImage: "metronome")
-                    .font(.caption.weight(.semibold))
+                    .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .semibold))
                 Spacer()
                 if let reference = prosody.reference {
                     Text("Ref \(Int(reference.speakingRateWpm)) wpm · You \(Int(prosody.user.speakingRateWpm)) wpm")
-                        .font(.caption2.weight(.semibold))
+                        .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale, weight: .semibold))
                         .foregroundStyle(.secondary)
                 } else {
                     Text("You \(Int(prosody.user.speakingRateWpm)) wpm")
-                        .font(.caption2.weight(.semibold))
+                        .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -5960,7 +8119,7 @@ struct ContentView: View {
 
             if !prosody.userStressCandidates.isEmpty {
                 Text("Words that sounded more prominent: \(prosody.userStressCandidates.joined(separator: ", "))")
-                    .font(.caption)
+                    .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -5973,16 +8132,16 @@ struct ContentView: View {
                         Label("Pitch / loudness curves", systemImage: showProsodyCurves ? "chevron.down" : "chevron.right")
                         Spacer()
                         Text(showProsodyCurves ? "Hide" : "Show")
-                            .font(.caption2.weight(.bold))
+                            .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale, weight: .bold))
                             .foregroundStyle(.secondary)
                     }
-                    .font(.caption.weight(.semibold))
+                    .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .semibold))
                 }
                 .buttonStyle(.plain)
 
                 if showProsodyCurves {
                     Text("Solid line is you. Dashed gray line is the reference. Use these to compare rise/fall, loudness peaks, and where the phrase loses energy.")
-                        .font(.caption2)
+                        .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     ProsodyCurveView(
@@ -6049,31 +8208,45 @@ struct ContentView: View {
                         .stroke(color.opacity(0.45))
                 )
             Text(label)
-                .font(.caption2.weight(.semibold))
+                .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
     }
 
     private var statsPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Practice Stats", systemImage: "calendar")
-                    .font(.headline)
-                Spacer()
-                Text("35 days")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    showingPracticeStats.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Label("Practice Stats", systemImage: "calendar")
+                        .font(scaledFeedbackFont(14, scale: feedbackTextSize.scale, weight: .semibold))
+                    Spacer()
+                    Text("\(coach.attempts(on: Date())) today · \(coach.currentStreak())d streak")
+                        .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: showingPracticeStats ? "chevron.down" : "chevron.right")
+                        .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
-            HStack(spacing: 8) {
-                statTile(title: "Today", value: "\(coach.attempts(on: Date()))")
-                statTile(title: "Streak", value: "\(coach.currentStreak())d")
-                statTile(title: "Total", value: "\(coach.allAttempts().count)")
+            if showingPracticeStats {
+                Divider()
+                HStack(spacing: 8) {
+                    statTile(title: "Today", value: "\(coach.attempts(on: Date()))")
+                    statTile(title: "Streak", value: "\(coach.currentStreak())d")
+                    statTile(title: "Total", value: "\(coach.allAttempts().count)")
+                }
+
+                calendarHeatmap
             }
-
-            calendarHeatmap
         }
-        .padding(14)
+        .padding(11)
         .background(subtleBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -6081,9 +8254,9 @@ struct ContentView: View {
     private func statTile(title: String, value: String) -> some View {
         VStack(spacing: 3) {
             Text(value)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .font(scaledFeedbackFont(18, scale: feedbackTextSize.scale, weight: .semibold, design: .rounded))
             Text(title)
-                .font(.caption2.weight(.semibold))
+                .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -6126,12 +8299,67 @@ struct ContentView: View {
         return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
-    private func formatAttempt(_ attempt: RecordingAttempt) -> String {
-        "\(attempt.date.formatted(date: .abbreviated, time: .shortened)) · \(formatDuration(attempt.duration))"
+    private func formatAttemptDate(_ date: Date, calendar: Calendar = .current) -> String {
+        if calendar.isDateInToday(date) {
+            return "Today · \(date.formatted(date: .omitted, time: .shortened))"
+        }
+        if calendar.isDateInYesterday(date) {
+            return "Yesterday · \(date.formatted(date: .omitted, time: .shortened))"
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+    }
+
+    private func formatAttemptDuration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        if total < 60 {
+            return "\(total)s"
+        }
+        return formatDuration(seconds)
+    }
+}
+
+struct CoachConversationMessageView: View {
+    @Environment(\.feedbackTextScale) private var textScale
+    let message: CoachConversationMessage
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if message.role == .user {
+                Spacer(minLength: 28)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(message.role == .user ? "You" : "Codex")
+                    .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
+                    .foregroundStyle(message.role == .user ? Theme.primary : Theme.accent)
+
+                renderedText
+                    .font(scaledFeedbackFont(13, scale: textScale))
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .padding(9)
+            .frame(maxWidth: message.role == .user ? 300 : .infinity, alignment: .leading)
+            .background(message.role == .user ? Theme.primary.opacity(0.10) : Theme.panel.opacity(0.86))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if message.role == .assistant {
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private var renderedText: Text {
+        if let attributed = try? AttributedString(markdown: message.text) {
+            return Text(attributed)
+        }
+        return Text(message.text)
     }
 }
 
 struct CoachFeedbackView: View, Equatable {
+    @Environment(\.feedbackTextScale) private var textScale
     let markdown: String
 
     static func == (lhs: CoachFeedbackView, rhs: CoachFeedbackView) -> Bool {
@@ -6139,23 +8367,23 @@ struct CoachFeedbackView: View, Equatable {
     }
 
     private var sections: [CoachFeedbackSection] {
-        CoachFeedbackParser.parse(markdown)
+        CoachFeedbackParser.parse(CoachFeedbackSanitizer.clean(markdown))
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(sections) { section in
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Image(systemName: section.icon)
-                            .font(.system(size: 13, weight: .bold))
+                            .font(scaledFeedbackFont(13, scale: textScale, weight: .bold))
                             .foregroundStyle(section.tint)
                             .frame(width: 24, height: 24)
                             .background(section.tint.opacity(0.13))
                             .clipShape(RoundedRectangle(cornerRadius: 7))
 
                         Text(section.title)
-                            .font(.system(.headline, design: .rounded).weight(.semibold))
+                            .font(scaledFeedbackFont(15, scale: textScale, weight: .semibold, design: .rounded))
                             .foregroundStyle(.primary)
 
                         Spacer()
@@ -6167,7 +8395,7 @@ struct CoachFeedbackView: View, Equatable {
                         }
                     }
                 }
-                .padding(14)
+                .padding(11)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.panel.opacity(0.78))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -6177,13 +8405,11 @@ struct CoachFeedbackView: View, Equatable {
                 )
             }
         }
-        .padding(14)
-        .background(Theme.subtle.opacity(0.62))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
 struct CoachFeedbackItemRow: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let item: CoachFeedbackItem
     let tint: Color
 
@@ -6196,7 +8422,7 @@ struct CoachFeedbackItemRow: View {
                     .frame(width: 5, height: 5)
             case .numbered(let number):
                 Text("\(number)")
-                    .font(.caption2.weight(.bold))
+                    .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 18, height: 18)
                     .background(tint)
@@ -6208,7 +8434,7 @@ struct CoachFeedbackItemRow: View {
             }
 
             markdownText(item.text)
-                .font(item.isParagraph ? .callout : .subheadline)
+                .font(scaledFeedbackFont(item.isParagraph ? 14 : 13, scale: textScale))
                 .foregroundStyle(.primary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -6230,14 +8456,26 @@ struct CoachFeedbackSection: Identifiable {
 
     var icon: String {
         switch title {
-        case let value where value.contains("结果"):
-            return "checkmark.seal"
+        case let value where value.contains("核心") || value.contains("判断") || value.contains("结果"):
+            return "scalemass"
+        case let value where value.contains("参考句"):
+            return "text.magnifyingglass"
+        case let value where value.contains("原句"):
+            return "quote.opening"
+        case let value where value.contains("重构") || value.contains("你的表达"):
+            return "person.wave.2"
+        case let value where value.contains("差异") || value.contains("用词"):
+            return "arrow.left.arrow.right"
         case let value where value.contains("读成"):
             return "ear"
         case let value where value.contains("句意") || value.contains("语块"):
             return "text.quote"
-        case let value where value.contains("漏记"):
+        case let value where value.contains("漏记") || value.contains("记成"):
             return "brain.head.profile"
+        case let value where value.contains("记忆"):
+            return "link"
+        case let value where value.contains("重说"):
+            return "arrow.clockwise"
         case let value where value.contains("改"):
             return "wrench.and.screwdriver"
         case let value where value.contains("下一"):
@@ -6249,13 +8487,17 @@ struct CoachFeedbackSection: Identifiable {
 
     var tint: Color {
         switch title {
-        case let value where value.contains("结果"):
+        case let value where value.contains("核心") || value.contains("判断") || value.contains("结果"):
             return Theme.accent
-        case let value where value.contains("读成"):
+        case let value where value.contains("参考句"):
+            return Theme.warning
+        case let value where value.contains("差异") || value.contains("用词") || value.contains("读成"):
             return Color(red: 0.78, green: 0.48, blue: 0.12)
+        case let value where value.contains("记成") || value.contains("记忆"):
+            return Color(red: 0.45, green: 0.32, blue: 0.76)
         case let value where value.contains("改"):
             return Theme.danger
-        case let value where value.contains("下一"):
+        case let value where value.contains("下一") || value.contains("重说"):
             return Theme.success
         default:
             return Theme.primary
@@ -6376,6 +8618,7 @@ struct PrimaryButtonStyle: ButtonStyle {
 struct InteractiveSentenceView: View {
     @EnvironmentObject private var coach: SpeechCoach
     let text: String
+    let fontSize: CGFloat
     @State private var selectedTokenIDs: Set<Int> = []
     @State private var tokenFrames: [Int: CGRect] = [:]
     @State private var selectionStart: CGPoint?
@@ -6414,7 +8657,7 @@ struct InteractiveSentenceView: View {
                 TokenFlowLayout(spacing: 8, rowSpacing: 8) {
                     ForEach(tokens) { token in
                         Text(token.text)
-                            .font(.system(size: 24, weight: token.isWordLike ? .semibold : .regular, design: .rounded))
+                            .font(.system(size: fontSize, weight: token.isWordLike ? .semibold : .regular, design: .rounded))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                             .foregroundStyle(token.isWordLike ? .primary : .secondary)
@@ -6807,6 +9050,7 @@ enum DictionaryLookupClient {
 }
 
 struct WordDiffFlow: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let items: [WordDiffItem]
     private let columns = [GridItem(.adaptive(minimum: 54), spacing: 6)]
 
@@ -6814,7 +9058,7 @@ struct WordDiffFlow: View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
             ForEach(items) { item in
                 Text(item.text)
-                    .font(.caption.weight(.semibold))
+                    .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
                     .foregroundStyle(foreground(for: item.status))
@@ -6827,7 +9071,7 @@ struct WordDiffFlow: View {
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(border(for: item.status))
                     )
-                    .help(help(for: item.status))
+                    .help(help(for: item))
             }
         }
     }
@@ -6836,6 +9080,8 @@ struct WordDiffFlow: View {
         switch status {
         case .matched:
             return Theme.success
+        case .substituted:
+            return Theme.warning
         case .missing, .extra:
             return Theme.danger
         }
@@ -6845,6 +9091,8 @@ struct WordDiffFlow: View {
         switch status {
         case .matched:
             return Theme.success.opacity(0.10)
+        case .substituted:
+            return Theme.warning.opacity(0.12)
         case .missing:
             return Theme.danger.opacity(0.12)
         case .extra:
@@ -6856,6 +9104,8 @@ struct WordDiffFlow: View {
         switch status {
         case .matched:
             return Theme.success.opacity(0.22)
+        case .substituted:
+            return Theme.warning.opacity(0.45)
         case .missing:
             return Theme.danger.opacity(0.42)
         case .extra:
@@ -6863,10 +9113,12 @@ struct WordDiffFlow: View {
         }
     }
 
-    private func help(for status: WordDiffStatus) -> String {
-        switch status {
+    private func help(for item: WordDiffItem) -> String {
+        switch item.status {
         case .matched:
             return "Matched"
+        case .substituted:
+            return "Reference: \(item.text) · You said: \(item.counterpartText ?? "another word")"
         case .missing:
             return "Missing from your recording"
         case .extra:
@@ -6876,6 +9128,7 @@ struct WordDiffFlow: View {
 }
 
 struct WordComparisonView: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let referenceText: String
     let userText: String
     let items: [WordDiffItem]
@@ -6894,7 +9147,26 @@ struct WordComparisonView: View {
     }
 
     private var userWords: [WordDiffItem] {
-        let filtered = items.filter { $0.status != .missing }
+        let filtered = items.compactMap { item -> WordDiffItem? in
+            switch item.status {
+            case .missing:
+                return nil
+            case .matched:
+                return WordDiffItem(
+                    text: item.counterpartText ?? item.text,
+                    status: .matched,
+                    counterpartText: item.text
+                )
+            case .substituted:
+                return WordDiffItem(
+                    text: item.counterpartText ?? item.text,
+                    status: .substituted,
+                    counterpartText: item.text
+                )
+            case .extra:
+                return item
+            }
+        }
         if !filtered.isEmpty { return filtered }
         return WordDiffEngine.tokenize(userText).map { WordDiffItem(text: $0.text, status: .extra) }
     }
@@ -6902,7 +9174,7 @@ struct WordComparisonView: View {
     private func comparisonRow(title: String, words: [WordDiffItem]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.caption2.weight(.bold))
+                .font(scaledFeedbackFont(11, scale: textScale, weight: .bold))
                 .foregroundStyle(.secondary)
             WordDiffFlow(items: words)
         }
@@ -6910,6 +9182,7 @@ struct WordComparisonView: View {
 }
 
 struct AzurePronunciationPanel: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let analysis: AzurePronunciationAnalysis
     let issues: [PronunciationRuleIssue]
     @State private var selectedIndex = 0
@@ -6928,11 +9201,11 @@ struct AzurePronunciationPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label("Azure Pronunciation", systemImage: "waveform.badge.magnifyingglass")
-                    .font(.caption.weight(.semibold))
+                    .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                 Spacer()
                 if let error = analysis.error {
                     Text("error")
-                        .font(.caption2.weight(.bold))
+                        .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                         .foregroundStyle(Theme.danger)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -6941,18 +9214,18 @@ struct AzurePronunciationPanel: View {
                         .help(error)
                 } else if analysis.rawStatus?.lowercased() == "success" {
                     Text("cached provider result")
-                        .font(.caption2.weight(.semibold))
+                        .font(scaledFeedbackFont(10, scale: textScale, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
             }
             Text("WhisperX checks what you said. Azure checks how closely you said the reference.")
-                .font(.caption2)
+                .font(scaledFeedbackFont(10, scale: textScale))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let error = analysis.error {
                 Text(error)
-                    .font(.caption)
+                    .font(scaledFeedbackFont(12, scale: textScale))
                     .foregroundStyle(Theme.danger)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -6967,12 +9240,12 @@ struct AzurePronunciationPanel: View {
                 if !issues.isEmpty {
                     VStack(alignment: .leading, spacing: 7) {
                         Text("Top fixes")
-                            .font(.caption.weight(.semibold))
+                            .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                             .foregroundStyle(.secondary)
                         ForEach(Array(issues.prefix(3).enumerated()), id: \.element.id) { index, issue in
                             HStack(alignment: .top, spacing: 7) {
                                 Text("\(index + 1)")
-                                    .font(.caption2.weight(.bold))
+                                    .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                                     .foregroundStyle(.white)
                                     .frame(width: 18, height: 18)
                                     .background(issueColor(issue))
@@ -6980,12 +9253,12 @@ struct AzurePronunciationPanel: View {
                                     .padding(.top, 1)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(issue.title)
-                                        .font(.caption.weight(.semibold))
+                                        .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                                     Text(issue.evidence)
-                                        .font(.caption2)
+                                        .font(scaledFeedbackFont(10, scale: textScale))
                                         .foregroundStyle(.secondary)
                                     Text(issue.coachNote)
-                                        .font(.caption)
+                                        .font(scaledFeedbackFont(12, scale: textScale))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
@@ -7004,10 +9277,10 @@ struct AzurePronunciationPanel: View {
                             Label("Word-level details", systemImage: showWordDetails ? "chevron.down" : "chevron.right")
                             Spacer()
                             Text("\(analysis.words.count) words")
-                                .font(.caption2.weight(.bold))
+                                .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                                 .foregroundStyle(.secondary)
                         }
-                        .font(.caption.weight(.semibold))
+                        .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     .padding(.vertical, 2)
@@ -7015,7 +9288,7 @@ struct AzurePronunciationPanel: View {
                     if showWordDetails {
                         VStack(alignment: .leading, spacing: 7) {
                             Text("Sentence overview")
-                                .font(.caption.weight(.semibold))
+                                .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                                 .foregroundStyle(.secondary)
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 54), spacing: 7)], alignment: .leading, spacing: 7) {
                                 ForEach(Array(analysis.words.enumerated()), id: \.element.id) { index, word in
@@ -7027,7 +9300,7 @@ struct AzurePronunciationPanel: View {
                                         VStack(spacing: 2) {
                                             HStack(spacing: 3) {
                                                 Text(word.text)
-                                                    .font(.caption.weight(.semibold))
+                                                    .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                                                     .lineLimit(1)
                                                     .minimumScaleFactor(0.7)
                                                 if issue != nil {
@@ -7037,7 +9310,7 @@ struct AzurePronunciationPanel: View {
                                                 }
                                             }
                                             Text(scoreLabel(word.accuracy))
-                                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                                .font(scaledFeedbackFont(9, scale: textScale, weight: .bold, design: .rounded))
                                         }
                                         .frame(maxWidth: .infinity)
                                         .padding(.horizontal, 6)
@@ -7061,7 +9334,7 @@ struct AzurePronunciationPanel: View {
                     }
                 } else {
                     Text("Azure returned sentence-level scores, but no word/phoneme details. Check whether the Speech resource supports phoneme granularity for this request.")
-                        .font(.caption)
+                        .font(scaledFeedbackFont(12, scale: textScale))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -7126,20 +9399,21 @@ struct AzurePronunciationPanel: View {
 }
 
 struct AzureScoreTile: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let label: String
     let value: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label)
-                .font(.caption2.weight(.bold))
+                .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                 .foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value.map { "\(Int($0.rounded()))" } ?? "--")
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .font(scaledFeedbackFont(18, scale: textScale, weight: .semibold, design: .rounded))
                     .foregroundStyle(scoreColor(value))
                 Text("/100")
-                    .font(.caption2.weight(.semibold))
+                    .font(scaledFeedbackFont(10, scale: textScale, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             GeometryReader { proxy in
@@ -7160,6 +9434,7 @@ struct AzureScoreTile: View {
 }
 
 struct AzureWordDetail: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let word: AzurePronunciationWord
     let issues: [PronunciationRuleIssue]
 
@@ -7167,31 +9442,31 @@ struct AzureWordDetail: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(word.text)
-                    .font(.headline)
+                    .font(scaledFeedbackFont(15, scale: textScale, weight: .semibold))
                 Spacer()
                 Text("Accuracy \(scoreText(word.accuracy))")
-                    .font(.caption.weight(.bold))
+                    .font(scaledFeedbackFont(12, scale: textScale, weight: .bold))
                     .foregroundStyle(scoreColor(word.accuracy))
             }
             if let errorType = word.errorType, errorType != "None" {
                 Label(errorType, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
+                    .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                     .foregroundStyle(Theme.danger)
             }
             if !issues.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Main issue")
-                        .font(.caption2.weight(.bold))
+                        .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                         .foregroundStyle(.secondary)
                     ForEach(issues.prefix(2)) { issue in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(issue.title)
-                                .font(.caption.weight(.semibold))
+                                .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                             Text(issue.coachNote)
-                                .font(.caption)
+                                .font(scaledFeedbackFont(12, scale: textScale))
                                 .fixedSize(horizontal: false, vertical: true)
                             Text(issue.evidence)
-                                .font(.caption2)
+                                .font(scaledFeedbackFont(10, scale: textScale))
                                 .foregroundStyle(.secondary)
                         }
                         .padding(7)
@@ -7207,7 +9482,7 @@ struct AzureWordDetail: View {
                 unitSection(title: "Syllables", units: word.syllables)
             }
             Text(coachNote(for: word))
-                .font(.caption)
+                .font(scaledFeedbackFont(12, scale: textScale))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -7219,16 +9494,16 @@ struct AzureWordDetail: View {
     private func unitSection(title: String, units: [AzurePronunciationUnit]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.caption2.weight(.bold))
+                .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                 .foregroundStyle(.secondary)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 6)], alignment: .leading, spacing: 6) {
                 ForEach(units) { unit in
                     HStack(spacing: 4) {
                         Text(unit.text)
-                            .font(.caption.weight(.semibold))
+                            .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                             .lineLimit(1)
                         Text(scoreText(unit.accuracy))
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .font(scaledFeedbackFont(9, scale: textScale, weight: .bold, design: .rounded))
                             .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 8)
@@ -7270,6 +9545,7 @@ private func scoreColor(_ value: Double?) -> Color {
 }
 
 struct RhythmMetricCard: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let label: String
     let unit: String
     let referenceValue: Double
@@ -7309,10 +9585,10 @@ struct RhythmMetricCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(label)
-                    .font(.caption.weight(.semibold))
+                    .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                 Spacer()
                 Text(statusLabel)
-                    .font(.caption2.weight(.bold))
+                    .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                     .foregroundStyle(statusColor)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
@@ -7328,13 +9604,13 @@ struct RhythmMetricCard: View {
 
             HStack(spacing: 6) {
                 Image(systemName: delta == 0 ? "equal" : (delta > 0 ? "arrow.up.right" : "arrow.down.right"))
-                    .font(.caption2.weight(.bold))
+                    .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                     .foregroundStyle(statusColor)
                 Text(deltaLabel)
-                    .font(.caption2.weight(.bold))
+                    .font(scaledFeedbackFont(10, scale: textScale, weight: .bold))
                     .foregroundStyle(statusColor)
                 Text(verdict)
-                    .font(.caption)
+                    .font(scaledFeedbackFont(12, scale: textScale))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -7374,10 +9650,10 @@ struct RhythmMetricCard: View {
     private func valuePill(title: String, value: Double, color: Color) -> some View {
         VStack(spacing: 2) {
             Text(title)
-                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .font(scaledFeedbackFont(9, scale: textScale, weight: .bold, design: .rounded))
                 .foregroundStyle(.secondary)
             Text(formatted(value))
-                .font(.caption.weight(.semibold))
+                .font(scaledFeedbackFont(12, scale: textScale, weight: .semibold))
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -7400,6 +9676,7 @@ struct RhythmMetricCard: View {
 }
 
 struct ProsodyCurveView: View {
+    @Environment(\.feedbackTextScale) private var textScale
     let title: String
     let userPoints: [ProsodyPoint]
     let referencePoints: [ProsodyPoint]?
@@ -7415,7 +9692,7 @@ struct ProsodyCurveView: View {
         }
         .overlay(alignment: .topLeading) {
             Text(title)
-                .font(.caption2.weight(.semibold))
+                .font(scaledFeedbackFont(10, scale: textScale, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(6)
         }
@@ -7544,6 +9821,10 @@ enum Theme {
         light: NSColor(srgbRed: 0.12, green: 0.58, blue: 0.34, alpha: 1),
         dark: NSColor(srgbRed: 0.30, green: 0.78, blue: 0.49, alpha: 1)
     )
+    static let warning = adaptive(
+        light: NSColor(srgbRed: 0.78, green: 0.48, blue: 0.08, alpha: 1),
+        dark: NSColor(srgbRed: 0.96, green: 0.68, blue: 0.25, alpha: 1)
+    )
     static let danger = adaptive(
         light: NSColor(srgbRed: 0.76, green: 0.20, blue: 0.20, alpha: 1),
         dark: NSColor(srgbRed: 0.96, green: 0.39, blue: 0.39, alpha: 1)
@@ -7567,6 +9848,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     case all
     case favorites
     case done
+    case needsReview
     case new
     case realAudio
     case tts
@@ -7578,6 +9860,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
         case .all: return "All"
         case .favorites: return "Favorites"
         case .done: return "Done"
+        case .needsReview: return "Needs Review"
         case .new: return "New"
         case .realAudio: return "Real Audio"
         case .tts: return "TTS"
@@ -7589,6 +9872,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
         case .all: return "tray.full"
         case .favorites: return "star.fill"
         case .done: return "checkmark.circle.fill"
+        case .needsReview: return "arrow.triangle.2.circlepath"
         case .new: return "circle"
         case .realAudio: return "waveform"
         case .tts: return "speaker.wave.2"

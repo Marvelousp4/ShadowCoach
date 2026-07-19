@@ -20,6 +20,8 @@ cp ".build/release/$EXECUTABLE_NAME" "$MACOS_DIR/$EXECUTABLE_NAME"
 chmod +x "$MACOS_DIR/$EXECUTABLE_NAME"
 cp "$ROOT_DIR/scripts/prosody_analyzer.py" "$RESOURCES_DIR/prosody_analyzer.py"
 chmod +x "$RESOURCES_DIR/prosody_analyzer.py"
+cp "$ROOT_DIR/scripts/fast_transcribe.py" "$RESOURCES_DIR/fast_transcribe.py"
+chmod +x "$RESOURCES_DIR/fast_transcribe.py"
 cp "$ICON_PATH" "$RESOURCES_DIR/ShadowCoach.icns"
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST

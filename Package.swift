@@ -17,6 +17,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ShadowCoachSmokeTests",
+            dependencies: ["ShadowCoach"],
             path: "Tests/ShadowCoachSmokeTests"
         )
     ]
