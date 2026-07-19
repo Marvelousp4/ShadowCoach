@@ -54,7 +54,7 @@ Open-response recordings are saved in history but are never scored as incorrect 
 - Target-versus-user word diff for missing, extra, and changed words.
 - Praat/Parselmouth speaking rate, pauses, pitch, intensity, and emphasis evidence.
 - Optional Azure Pronunciation Assessment for word and phoneme scores.
-- Optional local Codex CLI or Gemini coaching, cached by recording and provider.
+- Optional local Codex CLI or Gemini coaching, cached by recording and provider. Local Codex automatically routes fast tasks and nuanced judgment to suitable models from the user's own catalog.
 - Stage-aware AI coaching: exact recall, changed-situation transfer, free expression, and real-world use have different goals and prompts.
 - Local FSRS-6 spaced review with English-context prompts, an optional Chinese rescue hint, and two simple workload settings.
 - Daily practice history and progress statistics.

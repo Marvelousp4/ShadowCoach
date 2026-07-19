@@ -1212,8 +1212,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 case .codex:
                     raw = try await CodexFeedbackClient.run(
                         prompt: prompt,
-                        model: CodexFeedbackClient.coachingModel,
-                        reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                        workload: .learningTargetSelection
                     )
                 case .gemini:
                     raw = try await self.requestGeminiText(
@@ -1231,7 +1230,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     self.updateCurrentLearningPath { path in
                         path.suggestedTargets = targets
                         path.targetSuggestionModel = provider == .codex
-                            ? CodexFeedbackClient.coachingModel
+                            ? CodexFeedbackClient.route(for: .learningTargetSelection).model
                             : self.geminiModel
                         if let selected = path.selectedTarget,
                            !targets.contains(where: { $0.id == selected.id }) {
@@ -1282,6 +1281,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         let apiKeySnapshot = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldUseAI = useAICoach && !words.isEmpty
         let providerIsReady = provider == .codex || !apiKeySnapshot.isEmpty
+        let codexModel = provider == .codex
+            ? CodexFeedbackClient.route(for: .realUseFeedback).model
+            : nil
         let fallback = realUseFallbackFeedback(outcome: outcome, learningTarget: target)
         let coreReflection = RealUseReflection(
             createdAt: Date(),
@@ -1289,7 +1291,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             actualWords: words,
             coachFeedback: nil,
             feedbackProvider: provider.rawValue,
-            coachModel: provider == .codex ? CodexFeedbackClient.coachingModel : nil
+            coachModel: codexModel
         )
         saveRealUseReflection(coreReflection, for: selectedLineID)
         analysis = fallback
@@ -1320,8 +1322,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 case .codex:
                     raw = try await CodexFeedbackClient.run(
                         prompt: prompt,
-                        model: CodexFeedbackClient.coachingModel,
-                        reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                        workload: .realUseFeedback
                     )
                 case .gemini:
                     raw = try await self.requestGeminiText(
@@ -1337,7 +1338,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     actualWords: words,
                     coachFeedback: cleaned,
                     feedbackProvider: provider.rawValue,
-                    coachModel: provider == .codex ? CodexFeedbackClient.coachingModel : nil
+                    coachModel: codexModel
                 )
                 await MainActor.run {
                     self.saveRealUseReflection(completed, for: selectedLineID)
@@ -1858,7 +1859,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         }
         if feedbackProvider == .codex,
            let cachedModel = cache.coachModel,
-           cachedModel != CodexFeedbackClient.coachingModel {
+           cachedModel != CodexFeedbackClient.route(for: .exactCoaching).model {
             return ""
         }
         return CoachFeedbackSanitizer.clean(cache.geminiFeedback ?? "")
@@ -1871,7 +1872,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         }
         if feedbackProvider == .codex,
            let cachedModel = cache.coachModel,
-           cachedModel != CodexFeedbackClient.coachingModel {
+           cachedModel != CodexFeedbackClient.route(
+                for: CodexWorkload.feedback(for: cache.activity)
+           ).model {
             return ""
         }
         return CoachFeedbackSanitizer.clean(cache.coachFeedback ?? "")
@@ -2119,8 +2122,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             do {
                 let rawAnswer = try await CodexFeedbackClient.run(
                     prompt: prompt,
-                    model: CodexFeedbackClient.coachingModel,
-                    reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                    workload: .exactFollowUp
                 )
                 let answer = CoachFeedbackSanitizer.clean(rawAnswer)
                 let completedConversation = Array(
@@ -2167,8 +2169,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             do {
                 let raw = try await CodexFeedbackClient.run(
                     prompt: prompt,
-                    model: CodexFeedbackClient.coachingModel,
-                    reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                    workload: CodexWorkload.followUp(for: cache.activity)
                 )
                 let answer = CoachFeedbackSanitizer.clean(raw)
                 let completed = Array(
@@ -2233,6 +2234,10 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         let useAICoachSnapshot = useAICoach
         let selectedPathSnapshot = attempt.relativePath
         let providerIsReady = providerSnapshot == .codex || !apiKeySnapshot.isEmpty
+        let codexWorkload = CodexWorkload.feedback(for: activity)
+        let codexModel = providerSnapshot == .codex
+            ? CodexFeedbackClient.route(for: codexWorkload).model
+            : nil
 
         isAnalyzing = true
         recordingAnalysis = nil
@@ -2256,7 +2261,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     coachFeedback: nil,
                     feedbackProvider: providerSnapshot,
                     usedAICoach: useAICoachSnapshot,
-                    coachModel: providerSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                    coachModel: codexModel,
                     transcriptModel: FastWhisperTranscriber.cacheIdentifier,
                     coachConversation: attempt.openResponseAnalysisCache?.coachConversation
                 )
@@ -2293,8 +2298,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 case .codex:
                     feedback = try await CodexFeedbackClient.run(
                         prompt: prompt,
-                        model: CodexFeedbackClient.coachingModel,
-                        reasoningEffort: CodexFeedbackClient.coachingReasoningEffort,
+                        workload: codexWorkload,
                         onPartial: { [weak self] partial in
                             Task { @MainActor in
                                 guard let self,
@@ -2318,7 +2322,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     coachFeedback: CoachFeedbackSanitizer.clean(feedback),
                     feedbackProvider: providerSnapshot,
                     usedAICoach: useAICoachSnapshot,
-                    coachModel: providerSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                    coachModel: codexModel,
                     transcriptModel: FastWhisperTranscriber.cacheIdentifier,
                     coachConversation: attempt.openResponseAnalysisCache?.coachConversation
                 )
@@ -2401,6 +2405,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         let useAzureAssessmentSnapshot = useAzureAssessment
         let useProsodyAnalysisSnapshot = useProsodyAnalysis
         let useAICoachSnapshot = useAICoach
+        let codexModel = feedbackProviderSnapshot == .codex
+            ? CodexFeedbackClient.route(for: .exactCoaching).model
+            : nil
         let analysisRunID = UUID()
         analysisRunIDs[analysisRunKey(for: audioURL)] = analysisRunID
         ImportLogger.write("recordingAnalysis targetSentenceSnapshot=\(targetSentence)")
@@ -2554,7 +2561,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     usedAzureAssessment: useAzureAssessmentSnapshot,
                     usedProsodyAnalysis: useProsodyAnalysisSnapshot,
                     usedAICoach: useAICoachSnapshot,
-                    coachModel: feedbackProviderSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                    coachModel: codexModel,
                     transcriptModel: transcriptModelIdentifier
                 )
                 let shouldContinueWithCoach = await MainActor.run { () -> Bool in
@@ -2638,7 +2645,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                         usedAzureAssessment: useAzureAssessmentSnapshot,
                         usedProsodyAnalysis: useProsodyAnalysisSnapshot,
                         usedAICoach: useAICoachSnapshot,
-                        coachModel: feedbackProviderSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                        coachModel: codexModel,
                         transcriptModel: transcriptModelIdentifier,
                         coachConversation: currentConversation
                     )
@@ -3337,8 +3344,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         }
         let response = try await CodexFeedbackClient.run(
             prompt: prompt,
-            model: CodexFeedbackClient.coachingModel,
-            reasoningEffort: CodexFeedbackClient.coachingReasoningEffort,
+            workload: .exactCoaching,
             onPartial: sanitizedPartial
         )
         return CoachFeedbackSanitizer.clean(response)
@@ -3548,7 +3554,10 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     private func requestCodexPracticeLines(prompt: String) async throws -> [PracticeLine] {
-        let raw = try await CodexFeedbackClient.run(prompt: prompt)
+        let raw = try await CodexFeedbackClient.run(
+            prompt: prompt,
+            workload: .practiceGeneration
+        )
         return try decodePracticeLines(raw)
     }
 
@@ -6490,9 +6499,162 @@ struct GeminiResponse: Decodable {
     }
 }
 
+enum CodexWorkload: String, CaseIterable {
+    case learningTargetSelection
+    case practiceGeneration
+    case transformationFeedback
+    case freeSpeakingFeedback
+    case realUseFeedback
+    case exactCoaching
+    case exactFollowUp
+    case transformationFollowUp
+    case freeSpeakingFollowUp
+
+    fileprivate var tier: CodexModelTier {
+        switch self {
+        case .learningTargetSelection, .practiceGeneration, .transformationFeedback,
+             .realUseFeedback, .transformationFollowUp:
+            return .fast
+        case .freeSpeakingFeedback, .exactCoaching, .exactFollowUp, .freeSpeakingFollowUp:
+            return .nuanced
+        }
+    }
+
+    static func feedback(for activity: PracticeActivity) -> CodexWorkload {
+        switch activity {
+        case .transformation: return .transformationFeedback
+        case .freeExpression: return .freeSpeakingFeedback
+        case .shadowing, .correction: return .exactCoaching
+        }
+    }
+
+    static func followUp(for activity: PracticeActivity) -> CodexWorkload {
+        switch activity {
+        case .transformation: return .transformationFollowUp
+        case .freeExpression: return .freeSpeakingFollowUp
+        case .shadowing, .correction: return .exactFollowUp
+        }
+    }
+}
+
+enum CodexModelTier: Equatable {
+    case fast
+    case nuanced
+}
+
+struct CodexModelRoute: Equatable {
+    let model: String
+    let reasoningEffort: String
+    let tier: CodexModelTier
+}
+
+enum CodexModelRouter {
+    private struct Catalog: Decodable {
+        let models: [CatalogModel]
+    }
+
+    private struct CatalogModel: Decodable {
+        let slug: String
+    }
+
+    private static let fastCandidates = [
+        "gpt-5.6-luna",
+        "gpt-5.4-mini",
+        "gpt-5.6-terra",
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol"
+    ]
+    private static let nuancedCandidates = [
+        "gpt-5.6-terra",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.4-mini"
+    ]
+
+    static func route(
+        for workload: CodexWorkload,
+        availableModels: Set<String>? = nil
+    ) -> CodexModelRoute {
+        let available = availableModels ?? discoveredModels()
+        let candidates = workload.tier == .fast ? fastCandidates : nuancedCandidates
+        let fallback = workload.tier == .fast ? "gpt-5.4-mini" : "gpt-5.4"
+        let model: String
+
+        if available.isEmpty {
+            model = fallback
+        } else if let preferred = candidates.first(where: available.contains) {
+            model = preferred
+        } else {
+            model = available
+                .filter { $0 != "codex-auto-review" }
+                .sorted()
+                .first ?? fallback
+        }
+
+        return CodexModelRoute(
+            model: model,
+            reasoningEffort: "none",
+            tier: workload.tier
+        )
+    }
+
+    static var settingsSummary: String {
+        let fast = route(for: .learningTargetSelection).model
+        let nuanced = route(for: .exactCoaching).model
+        if fast == nuanced {
+            return displayName(for: fast)
+        }
+        return "Fast: \(displayName(for: fast)) · Deep: \(displayName(for: nuanced))"
+    }
+
+    static func displayName(for model: String) -> String {
+        model
+            .replacingOccurrences(of: "gpt-", with: "GPT ")
+            .replacingOccurrences(of: "-codex-", with: " Codex ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .map { token in
+                let lower = token.lowercased()
+                if lower == "gpt" { return "GPT" }
+                if lower == "codex" { return "Codex" }
+                return token.prefix(1).uppercased() + token.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+
+    private static func discoveredModels() -> Set<String> {
+        let catalogURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/models_cache.json")
+        guard let data = try? Data(contentsOf: catalogURL),
+              let catalog = try? JSONDecoder().decode(Catalog.self, from: data) else {
+            return []
+        }
+        return Set(catalog.models.map(\.slug))
+    }
+}
+
 enum CodexFeedbackClient {
-    static let coachingModel = "gpt-5.6-terra"
-    static let coachingReasoningEffort = "none"
+    static func route(for workload: CodexWorkload) -> CodexModelRoute {
+        CodexModelRouter.route(for: workload)
+    }
+
+    static func run(
+        prompt: String,
+        workload: CodexWorkload,
+        onPartial: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        let route = route(for: workload)
+        ImportLogger.write("codex route workload=\(workload.rawValue) tier=\(route.tier) model=\(route.model)")
+        return try await run(
+            prompt: prompt,
+            model: route.model,
+            reasoningEffort: route.reasoningEffort,
+            onPartial: onPartial
+        )
+    }
 
     static func run(
         prompt: String,
@@ -6506,7 +6668,7 @@ enum CodexFeedbackClient {
                 let result = try await CodexAppServerClient.shared.run(
                     prompt: prompt,
                     model: model,
-                    reasoningEffort: reasoningEffort ?? coachingReasoningEffort,
+                    reasoningEffort: reasoningEffort ?? "none",
                     onPartial: onPartial
                 )
                 ImportLogger.write("codex persistent done model=\(model) seconds=\(String(format: "%.2f", Date().timeIntervalSince(startedAt)))")
@@ -9614,10 +9776,15 @@ struct ContentView: View {
                         }
                     }
                 } else {
-                    settingsRow("Local model", icon: "bolt.fill") {
-                        Text("GPT-5.6 Terra")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                    settingsRow("Local models", icon: "bolt.fill") {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(CodexModelRouter.settingsSummary)
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text("Automatically matched to each task")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
             }

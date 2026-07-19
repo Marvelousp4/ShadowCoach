@@ -568,6 +568,55 @@ final class RepositorySmokeTests: XCTestCase {
         XCTAssertTrue(prompt.contains("## 下次一句话"))
     }
 
+    func testCodexRouterUsesFastModelForSelectionAndGeneration() {
+        let available: Set<String> = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+
+        let selection = CodexModelRouter.route(
+            for: .learningTargetSelection,
+            availableModels: available
+        )
+        let generation = CodexModelRouter.route(
+            for: .practiceGeneration,
+            availableModels: available
+        )
+
+        XCTAssertEqual(selection.model, "gpt-5.6-luna")
+        XCTAssertEqual(generation.model, "gpt-5.6-luna")
+        XCTAssertEqual(selection.tier, .fast)
+        XCTAssertEqual(selection.reasoningEffort, "none")
+    }
+
+    func testCodexRouterKeepsNuancedJudgmentOnBalancedModel() {
+        let available: Set<String> = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+
+        let exact = CodexModelRouter.route(for: .exactCoaching, availableModels: available)
+        let freeSpeaking = CodexModelRouter.route(for: .freeSpeakingFeedback, availableModels: available)
+
+        XCTAssertEqual(exact.model, "gpt-5.6-terra")
+        XCTAssertEqual(freeSpeaking.model, "gpt-5.6-terra")
+        XCTAssertEqual(exact.tier, .nuanced)
+    }
+
+    func testCodexRouterFallsBackWithoutChoosingSparkOverKnownModels() {
+        let available: Set<String> = ["gpt-5.3-codex-spark", "gpt-5.4-mini", "gpt-5.4"]
+
+        XCTAssertEqual(
+            CodexModelRouter.route(for: .transformationFeedback, availableModels: available).model,
+            "gpt-5.4-mini"
+        )
+        XCTAssertEqual(
+            CodexModelRouter.route(for: .exactCoaching, availableModels: available).model,
+            "gpt-5.4"
+        )
+    }
+
+    func testOpenResponseWorkloadsMatchLearningObjective() {
+        XCTAssertEqual(CodexWorkload.feedback(for: .transformation), .transformationFeedback)
+        XCTAssertEqual(CodexWorkload.feedback(for: .freeExpression), .freeSpeakingFeedback)
+        XCTAssertEqual(CodexWorkload.followUp(for: .transformation), .transformationFollowUp)
+        XCTAssertEqual(CodexWorkload.followUp(for: .freeExpression), .freeSpeakingFollowUp)
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
