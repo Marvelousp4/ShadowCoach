@@ -1271,7 +1271,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             } catch {
                 await MainActor.run {
                     self.isFindingLearningTargets = false
-                    self.status = "Could not refine learning targets: \(error.localizedDescription)"
+                    self.status = "Could not find learning targets: \(error.localizedDescription)"
                 }
             }
         }
@@ -8396,14 +8396,15 @@ struct ContentView: View {
                     coach.findBetterLearningTargets()
                 } label: {
                     Label(
-                        coach.isFindingLearningTargets ? "Inspecting the sentence..." : "Refine with \(coach.feedbackProvider.label)",
-                        systemImage: "wand.and.stars"
+                        learningTargetSearchTitle(hasTargets: !targets.isEmpty),
+                        systemImage: coach.isFindingLearningTargets ? "sparkles" : "arrow.clockwise"
                     )
                     .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accent)
                 .disabled(coach.isFindingLearningTargets)
+                .help("Run target selection again and replace the cached suggestions")
             }
 
         case .transformation:
@@ -8464,6 +8465,16 @@ struct ContentView: View {
         default:
             EmptyView()
         }
+    }
+
+    private func learningTargetSearchTitle(hasTargets: Bool) -> String {
+        if coach.isFindingLearningTargets {
+            return "Checking this sentence..."
+        }
+        if coach.feedbackProvider == .gemini {
+            return hasTargets ? "Ask Gemini for alternatives" : "Try Gemini"
+        }
+        return hasTargets ? "Find another option" : "Check again"
     }
 
     private func learningTargetRow(_ target: LearningTarget) -> some View {
