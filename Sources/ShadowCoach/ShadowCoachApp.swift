@@ -1756,11 +1756,22 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     func deleteAttempt(_ attempt: RecordingAttempt) {
         guard let location = practiceStore.progress.first(where: { _, progress in
             progress.attempts.contains(where: { $0.id == attempt.id })
-        }) else { return }
+        }) else {
+            status = "This recording is no longer in the saved history."
+            return
+        }
         let lineID = location.key
         let url = appSupportDirectory.appendingPathComponent(attempt.relativePath)
-        try? FileManager.default.removeItem(at: url)
+        if FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                status = "Could not delete recording: \(error.localizedDescription)"
+                return
+            }
+        }
         if selectedAttemptRelativePathForAnalysis == attempt.relativePath {
+            stopPlayback()
             selectedAttemptRelativePathForAnalysis = nil
             recordingAnalysis = nil
             analysis = ""
@@ -7201,6 +7212,7 @@ struct ContentView: View {
     @State private var settingsSection: AppSettingsSection = .appearance
     @State private var showingPracticeStats = false
     @State private var showingRecordingHistory = false
+    @State private var pendingHistoryAttemptDeletion: RecordingAttempt?
     @State private var showingAllAttempts = false
     @State private var hoveredAttemptID: UUID?
     @State private var sourceVisibleLimits: [String: Int] = [:]
@@ -9124,7 +9136,7 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
                     ForEach(attempts) { attempt in
-                        savedAttemptRow(attempt)
+                        savedAttemptRow(attempt, isPresentedInHistorySheet: true)
                     }
                 }
                 .padding(.vertical, 2)
@@ -9133,6 +9145,16 @@ struct ContentView: View {
         .padding(20)
         .frame(minWidth: 520, idealWidth: 560, minHeight: 420, idealHeight: 560)
         .background(Theme.appBackground)
+        .alert(item: $pendingHistoryAttemptDeletion) { attempt in
+            Alert(
+                title: Text("Delete Recording?"),
+                message: Text("This recording and its cached analysis will be permanently removed."),
+                primaryButton: .destructive(Text("Delete")) {
+                    coach.deleteAttempt(attempt)
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 
     private var recordingPanel: some View {
@@ -9215,7 +9237,10 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    private func savedAttemptRow(_ attempt: RecordingAttempt) -> some View {
+    private func savedAttemptRow(
+        _ attempt: RecordingAttempt,
+        isPresentedInHistorySheet: Bool = false
+    ) -> some View {
         let isSelected = coach.selectedAttemptRelativePathForAnalysis == attempt.relativePath
         let isHovered = hoveredAttemptID == attempt.id
         let score = attempt.analysisCache?.localAnalysis.accuracy
@@ -9263,7 +9288,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
 
             Button {
-                pendingLibraryDeletion = .attempt(attempt)
+                requestAttemptDeletion(attempt, inHistorySheet: isPresentedInHistorySheet)
             } label: {
                 Image(systemName: "trash")
                     .font(.caption.weight(.semibold))
@@ -9308,10 +9333,18 @@ struct ContentView: View {
             }
             Divider()
             Button(role: .destructive) {
-                pendingLibraryDeletion = .attempt(attempt)
+                requestAttemptDeletion(attempt, inHistorySheet: isPresentedInHistorySheet)
             } label: {
                 Label("Delete Recording", systemImage: "trash")
             }
+        }
+    }
+
+    private func requestAttemptDeletion(_ attempt: RecordingAttempt, inHistorySheet: Bool) {
+        if inHistorySheet {
+            pendingHistoryAttemptDeletion = attempt
+        } else {
+            pendingLibraryDeletion = .attempt(attempt)
         }
     }
 
