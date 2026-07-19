@@ -20,7 +20,23 @@ The LLM explains evidence; it must not invent the pronunciation score.
 
 ## Current Source Layout
 
-The macOS prototype currently lives mostly in `Sources/ShadowCoach/ShadowCoachApp.swift`, with isolated domain logic such as `ReviewScheduler.swift` extracted into testable files. Refactoring should stay incremental and behavior-preserving.
+The macOS app is split by responsibility while remaining one Swift Package target:
+
+```text
+ShadowCoachApp.swift                 app entry, shared types, import/provider services
+ContentView.swift                    top-level workspace and practice flow
+FeedbackViews.swift                  transcript, pronunciation, and coaching presentation
+RecordingHistoryViews.swift          saved-attempt list and deletion interaction
+SpeechCoach.swift                    core observable state and workflow coordination
+SpeechCoach+Analysis.swift           transcription, scoring, and AI coaching orchestration
+SpeechCoach+RecordingHistory.swift   attempt playback, persistence, cache, and statistics
+RecordingHistory.swift               persisted attempt and cache schemas
+RecordingAnalysis.swift              analysis models, word diff, and pronunciation rules
+LearningPath.swift                   learning stages and reusable-language selection
+ReviewScheduler.swift                spaced-repetition scheduling
+```
+
+Persistent `Codable` field names remain backward compatible so existing `practice.json` recordings and cached analyses survive internal refactors. New work should extend the narrowest matching file rather than growing `SpeechCoach.swift` or `ContentView.swift` by default.
 
 Target modules:
 

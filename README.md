@@ -23,16 +23,16 @@ Shadow Coach is a local-first macOS and iPhone practice app. Listen without seei
 The compact **Next Coach** card advances one sentence through a complete learning loop without exposing nine separate modes:
 
 1. Understand authentic input from its situation and meaning.
-2. Notice one reusable chunk plus its stress, reductions, and connections.
+2. Keep one genuinely reusable sentence frame, expression, collocation, or phrasal verb. A sentence may honestly have none.
 3. Shadow the speaker's timing and phrasing.
 4. Retrieve the line aloud without seeing it.
 5. Schedule later retrieval with local FSRS-6.
-6. Reuse the chunk in a different situation.
+6. Reuse the learning target in a genuinely different situation.
 7. Speak freely about a related experience or opinion.
-8. Use the chunk in a real conversation, meeting, or voice message.
+8. Use the learning target in a real conversation, meeting, or voice message, then record what happened.
 9. Analyze an exact attempt, apply feedback, and record a corrected retry.
 
-Open-response recordings are saved in history but are never scored as incorrect copies of the reference. See [Learning path](docs/learning-path.md) for the completion rules.
+Open-response recordings are saved in history but are never scored as incorrect copies of the reference. New Situation feedback checks transfer and target use; Free Speaking feedback checks communication and natural English; real-use feedback is based only on the learner's self-report. See [Learning path](docs/learning-path.md) for the completion rules.
 
 ## Features
 
@@ -54,7 +54,8 @@ Open-response recordings are saved in history but are never scored as incorrect 
 - Target-versus-user word diff for missing, extra, and changed words.
 - Praat/Parselmouth speaking rate, pauses, pitch, intensity, and emphasis evidence.
 - Optional Azure Pronunciation Assessment for word and phoneme scores.
-- Optional local Codex CLI or Gemini coaching, cached by recording and provider.
+- Optional local Codex CLI or Gemini coaching, cached by recording and provider. Local Codex automatically routes fast tasks and nuanced judgment to suitable models from the user's own catalog.
+- Stage-aware AI coaching: exact recall, changed-situation transfer, free expression, and real-world use have different goals and prompts.
 - Local FSRS-6 spaced review with English-context prompts, an optional Chinese rescue hint, and two simple workload settings.
 - Daily practice history and progress statistics.
 
