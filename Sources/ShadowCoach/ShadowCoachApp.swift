@@ -40,13 +40,11 @@ enum FocusedInput: Hashable {
 private enum LibraryDeletionTarget: Identifiable {
     case source(String)
     case line(PracticeLine)
-    case attempt(RecordingAttempt)
 
     var id: String {
         switch self {
         case .source(let source): return "source-\(source)"
         case .line(let line): return "line-\(line.id.uuidString)"
-        case .attempt(let attempt): return "attempt-\(attempt.id.uuidString)"
         }
     }
 
@@ -54,7 +52,6 @@ private enum LibraryDeletionTarget: Identifiable {
         switch self {
         case .source: return "Delete Library Folder?"
         case .line: return "Delete Sentence?"
-        case .attempt: return "Delete Recording?"
         }
     }
 
@@ -64,8 +61,6 @@ private enum LibraryDeletionTarget: Identifiable {
             return "\(source) and its saved recordings, analysis, favorites, and unused source audio will be removed."
         case .line(let line):
             return "\(line.title) and its saved recordings and analysis will be removed."
-        case .attempt:
-            return "This recording and its cached analysis will be permanently removed."
         }
     }
 }
@@ -7318,9 +7313,7 @@ struct ContentView: View {
     @State private var settingsSection: AppSettingsSection = .appearance
     @State private var showingPracticeStats = false
     @State private var showingRecordingHistory = false
-    @State private var pendingHistoryAttemptDeletion: RecordingAttempt?
     @State private var showingAllAttempts = false
-    @State private var hoveredAttemptID: UUID?
     @State private var sourceVisibleLimits: [String: Int] = [:]
     @State private var pendingLibraryDeletion: LibraryDeletionTarget?
     @State private var isLibrarySearchEditing = false
@@ -7410,8 +7403,6 @@ struct ContentView: View {
                         sourceVisibleLimits.removeValue(forKey: source)
                     case .line(let line):
                         coach.deleteLine(line)
-                    case .attempt(let attempt):
-                        coach.deleteAttempt(attempt)
                     }
                 },
                 secondaryButton: .cancel()
@@ -7454,7 +7445,6 @@ struct ContentView: View {
         .onChange(of: coach.selectedLineID) { _ in
             expandSelectedSource()
             showingAllAttempts = false
-            hoveredAttemptID = nil
             coachQuestion = ""
         }
         .onChange(of: coach.selectedAttemptRelativePathForAnalysis) { _ in
@@ -9316,7 +9306,7 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
                     ForEach(attempts) { attempt in
-                        savedAttemptRow(attempt, isPresentedInHistorySheet: true)
+                        SavedAttemptRowView(attempt: attempt)
                     }
                 }
                 .padding(.vertical, 2)
@@ -9325,16 +9315,6 @@ struct ContentView: View {
         .padding(20)
         .frame(minWidth: 520, idealWidth: 560, minHeight: 420, idealHeight: 560)
         .background(Theme.appBackground)
-        .alert(item: $pendingHistoryAttemptDeletion) { attempt in
-            Alert(
-                title: Text("Delete Recording?"),
-                message: Text("This recording and its cached analysis will be permanently removed."),
-                primaryButton: .destructive(Text("Delete")) {
-                    coach.deleteAttempt(attempt)
-                },
-                secondaryButton: .cancel()
-            )
-        }
     }
 
     private var recordingPanel: some View {
@@ -9389,7 +9369,7 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(visibleAttempts) { attempt in
-                        savedAttemptRow(attempt)
+                        SavedAttemptRowView(attempt: attempt)
                     }
 
                     if attempts.count > 5 {
@@ -9415,131 +9395,6 @@ struct ContentView: View {
         .padding(14)
         .background(subtleBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func savedAttemptRow(
-        _ attempt: RecordingAttempt,
-        isPresentedInHistorySheet: Bool = false
-    ) -> some View {
-        let isSelected = coach.selectedAttemptRelativePathForAnalysis == attempt.relativePath
-        let isHovered = hoveredAttemptID == attempt.id
-        let score = attempt.analysisCache?.localAnalysis.accuracy
-
-        return HStack(spacing: 9) {
-            Button {
-                coach.playAttempt(attempt)
-            } label: {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(isSelected ? Color.white : Theme.primary)
-                    .frame(width: 27, height: 27)
-                    .background(isSelected ? Theme.primary : Theme.primary.opacity(0.11))
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .help("Play this recording")
-
-            Button {
-                coach.selectAttempt(attempt)
-            } label: {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(formatAttemptDate(attempt.date))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Text(attemptDetail(attempt))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 6)
-
-                    if let score {
-                        Text("\(Int(score.rounded()))%")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(scoreColor(score))
-                            .monospacedDigit()
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                requestAttemptDeletion(attempt, inHistorySheet: isPresentedInHistorySheet)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.danger)
-                    .frame(width: 25, height: 25)
-            }
-            .buttonStyle(.plain)
-            .opacity(isHovered || isSelected ? 1 : 0)
-            .accessibilityHidden(!(isHovered || isSelected))
-            .help("Delete this recording")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(
-            isSelected
-                ? Theme.primary.opacity(0.10)
-                : (isHovered ? Theme.panel.opacity(0.72) : Color.clear)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay(alignment: .leading) {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Theme.primary)
-                    .frame(width: 3)
-                    .padding(.vertical, 7)
-            }
-        }
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            hoveredAttemptID = hovering ? attempt.id : nil
-        }
-        .contextMenu {
-            Button {
-                coach.selectAttempt(attempt)
-            } label: {
-                Label("Load Analysis", systemImage: "chart.bar.doc.horizontal")
-            }
-            Button {
-                coach.playAttempt(attempt)
-            } label: {
-                Label("Play Recording", systemImage: "play.fill")
-            }
-            Divider()
-            Button(role: .destructive) {
-                requestAttemptDeletion(attempt, inHistorySheet: isPresentedInHistorySheet)
-            } label: {
-                Label("Delete Recording", systemImage: "trash")
-            }
-        }
-    }
-
-    private func requestAttemptDeletion(_ attempt: RecordingAttempt, inHistorySheet: Bool) {
-        if inHistorySheet {
-            pendingHistoryAttemptDeletion = attempt
-        } else {
-            pendingLibraryDeletion = .attempt(attempt)
-        }
-    }
-
-    private func attemptDetail(_ attempt: RecordingAttempt) -> String {
-        let analysisState: String
-        if attempt.resolvedActivity.comparesWithReference {
-            analysisState = attempt.analysisCache == nil ? "Not analyzed" : "Analysis saved"
-        } else {
-            if let cache = attempt.openResponseAnalysisCache {
-                analysisState = cache.coachFeedback == nil ? "Transcript saved" : "Feedback saved"
-            } else {
-                analysisState = "Not analyzed"
-            }
-        }
-        return "\(formatAttemptDuration(attempt.duration)) · \(attempt.resolvedActivity.label) · \(analysisState)"
     }
 
     private var progressSummary: String {
@@ -10506,12 +10361,159 @@ struct ContentView: View {
         }
     }
 
-    private func formatDuration(_ seconds: Double) -> String {
-        let total = Int(seconds.rounded())
-        return String(format: "%02d:%02d", total / 60, total % 60)
+}
+
+private struct SavedAttemptRowView: View {
+    @EnvironmentObject private var coach: SpeechCoach
+    @State private var isHovered = false
+    @State private var isConfirmingDeletion = false
+    let attempt: RecordingAttempt
+
+    private var isSelected: Bool {
+        coach.selectedAttemptRelativePathForAnalysis == attempt.relativePath
     }
 
-    private func formatAttemptDate(_ date: Date, calendar: Calendar = .current) -> String {
+    private var score: Double? {
+        attempt.analysisCache?.localAnalysis.accuracy
+    }
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Button {
+                coach.playAttempt(attempt)
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(isSelected ? Color.white : Theme.primary)
+                    .frame(width: 27, height: 27)
+                    .background(isSelected ? Theme.primary : Theme.primary.opacity(0.11))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Play this recording")
+
+            Button {
+                coach.selectAttempt(attempt)
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(formattedDate(attempt.date))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(attemptDetail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 6)
+
+                    if let score {
+                        Text("\(Int(score.rounded()))%")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(color(for: score))
+                            .monospacedDigit()
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+
+            if isConfirmingDeletion {
+                Button(role: .destructive) {
+                    isConfirmingDeletion = false
+                    coach.deleteAttempt(attempt)
+                } label: {
+                    Text("Delete")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 9)
+                        .frame(height: 25)
+                        .background(Theme.danger)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .help("Permanently delete this recording and its analysis")
+
+                Button {
+                    isConfirmingDeletion = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 25, height: 25)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel deletion")
+            } else {
+                Button {
+                    isConfirmingDeletion = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.danger)
+                        .frame(width: 25, height: 25)
+                }
+                .buttonStyle(.plain)
+                .opacity(isHovered || isSelected ? 1 : 0.55)
+                .help("Delete this recording")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(
+            isConfirmingDeletion
+                ? Theme.danger.opacity(0.08)
+                : isSelected
+                ? Theme.primary.opacity(0.10)
+                : (isHovered ? Theme.panel.opacity(0.72) : Color.clear)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(alignment: .leading) {
+            if isConfirmingDeletion || isSelected {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(isConfirmingDeletion ? Theme.danger : Theme.primary)
+                    .frame(width: 3)
+                    .padding(.vertical, 7)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            Button {
+                coach.selectAttempt(attempt)
+            } label: {
+                Label("Load Analysis", systemImage: "chart.bar.doc.horizontal")
+            }
+            Button {
+                coach.playAttempt(attempt)
+            } label: {
+                Label("Play Recording", systemImage: "play.fill")
+            }
+            Divider()
+            Button(role: .destructive) {
+                isConfirmingDeletion = true
+            } label: {
+                Label("Delete Recording", systemImage: "trash")
+            }
+        }
+    }
+
+    private var attemptDetail: String {
+        let analysisState: String
+        if attempt.resolvedActivity.comparesWithReference {
+            analysisState = attempt.analysisCache == nil ? "Not analyzed" : "Analysis saved"
+        } else if let cache = attempt.openResponseAnalysisCache {
+            analysisState = cache.coachFeedback == nil ? "Transcript saved" : "Feedback saved"
+        } else {
+            analysisState = "Not analyzed"
+        }
+        return "\(formattedDuration(attempt.duration)) · \(attempt.resolvedActivity.label) · \(analysisState)"
+    }
+
+    private func formattedDate(_ date: Date, calendar: Calendar = .current) -> String {
         if calendar.isDateInToday(date) {
             return "Today · \(date.formatted(date: .omitted, time: .shortened))"
         }
@@ -10521,12 +10523,18 @@ struct ContentView: View {
         return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 
-    private func formatAttemptDuration(_ seconds: Double) -> String {
+    private func formattedDuration(_ seconds: Double) -> String {
         let total = max(0, Int(seconds.rounded()))
         if total < 60 {
             return "\(total)s"
         }
-        return formatDuration(seconds)
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    private func color(for score: Double) -> Color {
+        if score >= 85 { return Theme.success }
+        if score >= 65 { return Theme.primary }
+        return Theme.danger
     }
 }
 
