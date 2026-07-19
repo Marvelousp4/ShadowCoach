@@ -323,12 +323,15 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     @Published var isRecording = false
     @Published var hasRecording = false
     @Published var recordingDuration = 0.0
+    @Published private(set) var recordingStartedAt: Date?
     @Published var apiKey = ""
     @Published var isAnalyzing = false
     @Published var analysis = ""
     @Published var recordingAnalysis: RecordingAnalysis?
     @Published var generatedLines: [PracticeLine] = []
     @Published var importedLines: [PracticeLine] = []
+    @Published private(set) var libraryRevision = 0
+    @Published private(set) var practiceRevision = 0
     @Published var selectedLineID: UUID?
     @Published var selectedLine: PracticeLine?
     @Published var practiceStore = PracticeStore()
@@ -415,7 +418,6 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     private var player: AVAudioPlayer?
     private var sourcePlayer: AVPlayer?
     private var sourceStopTimer: Timer?
-    private var timer: Timer?
     private let persistenceQueue = DispatchQueue(label: "ShadowCoach.persistence", qos: .utility)
     private let persistenceLock = NSLock()
     private var practiceSaveVersion = 0
@@ -425,6 +427,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     private let sourceAudioTailPadding = 0.0
     private let sourceAudioMaxNextLineBleed = 0.24
     private let geminiModel = "gemini-2.5-flash-lite"
+    private let lastSelectedLineDefaultsKey = "LastSelectedLineID"
     let speechRateOptions = [135.0, 155.0, 175.0, 200.0]
 
     var englishVoices: [SpeechVoice] {
@@ -571,7 +574,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         clearRecording()
         selectedLineID = line.id
         selectedLine = line
-        practiceStore.lastSelectedLineID = line.id
+        rememberLastSelectedLine(line.id)
         sentence = line.text
         isSentenceVisible = false
         analysis = ""
@@ -590,7 +593,6 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             realUseActualWords = ""
         }
         activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
-        savePracticeStore()
         status = "Sentence loaded. Listen first, then repeat from memory."
         if useAICoach,
            feedbackProvider == .codex,
@@ -602,12 +604,26 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
 
     func restoreLastSelectedLine(from lines: [PracticeLine]) {
         guard selectedLine == nil else { return }
-        if let lastSelectedLineID = practiceStore.lastSelectedLineID,
-           let line = lines.first(where: { $0.id == lastSelectedLineID }) {
-            choose(line)
-            status = "Restored last sentence."
-        } else if let firstLine = lines.first {
+        let defaultsID = UserDefaults.standard.string(forKey: lastSelectedLineDefaultsKey)
+            .flatMap { UUID(uuidString: $0) }
+        for rememberedID in [defaultsID, practiceStore.lastSelectedLineID].compactMap({ $0 }) {
+            if let line = lines.first(where: { $0.id == rememberedID }) {
+                choose(line)
+                status = "Restored last sentence."
+                return
+            }
+        }
+        if let firstLine = lines.first {
             choose(firstLine)
+        }
+    }
+
+    private func rememberLastSelectedLine(_ lineID: UUID?) {
+        practiceStore.lastSelectedLineID = lineID
+        if let lineID {
+            UserDefaults.standard.set(lineID.uuidString, forKey: lastSelectedLineDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: lastSelectedLineDefaultsKey)
         }
     }
 
@@ -694,6 +710,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             let persisted = try JSONDecoder().decode(PersistedLibrary.self, from: data)
             importedLines = persisted.importedLines
             generatedLines = persisted.generatedLines
+            libraryRevision &+= 1
             status = "Library loaded"
             ImportLogger.write("loadLibrary success imported=\(importedLines.count) generated=\(generatedLines.count)")
         } catch {
@@ -707,6 +724,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         do {
             let data = try Data(contentsOf: practiceURL)
             practiceStore = try JSONDecoder().decode(PracticeStore.self, from: data)
+            practiceRevision &+= 1
             if migrateLegacyReviewCards() {
                 savePracticeStore()
             }
@@ -733,6 +751,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func savePracticeStore() {
+        practiceRevision &+= 1
         let snapshot = practiceStore
         let destination = practiceURL
         persistenceLock.lock()
@@ -759,6 +778,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func saveLibrary() {
+        libraryRevision &+= 1
         let start = Date()
         ImportLogger.write("saveLibrary start imported=\(importedLines.count) generated=\(generatedLines.count)")
         let snapshot = PersistedLibrary(importedLines: importedLines, generatedLines: generatedLines)
@@ -855,7 +875,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         if selectedWasRemoved {
             selectedLine = nil
             selectedLineID = nil
-            practiceStore.lastSelectedLineID = nil
+            rememberLastSelectedLine(nil)
             if let replacement = (importedLines + generatedLines + PracticeLine.library).first {
                 choose(replacement)
             }
@@ -881,7 +901,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         if selectedWasRemoved {
             selectedLine = nil
             selectedLineID = nil
-            practiceStore.lastSelectedLineID = nil
+            rememberLastSelectedLine(nil)
             if let replacement = (importedLines + generatedLines + PracticeLine.library).first {
                 choose(replacement)
             }
@@ -939,7 +959,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             practiceStore.favorites.remove(lineID)
         }
         if let lastSelectedLineID = practiceStore.lastSelectedLineID, lineIDs.contains(lastSelectedLineID) {
-            practiceStore.lastSelectedLineID = nil
+            rememberLastSelectedLine(nil)
         }
     }
 
@@ -1020,8 +1040,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         guard recorder != nil || isRecording else { return }
         recorder?.stop()
         recorder = nil
-        timer?.invalidate()
-        timer = nil
+        recordingStartedAt = nil
         isRecording = false
         if let capturedDuration = try? AVAudioPlayer(contentsOf: recordingURL).duration,
            capturedDuration.isFinite {
@@ -1095,15 +1114,15 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         try? FileManager.default.removeItem(at: recordingURL)
         hasRecording = false
         recordingDuration = 0
+        recordingStartedAt = nil
         status = "Recording cleared"
     }
 
     func discardCurrentRecording() {
         stopPlayback()
-        timer?.invalidate()
-        timer = nil
         recorder?.stop()
         recorder = nil
+        recordingStartedAt = nil
         isRecording = false
         try? FileManager.default.removeItem(at: recordingURL)
         hasRecording = false
@@ -3197,13 +3216,8 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             isRecording = true
             hasRecording = false
             recordingDuration = 0
+            recordingStartedAt = Date()
             status = "Recording... read the sentence out loud"
-
-            timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                guard let self, let recorder = self.recorder else { return }
-                self.recordingDuration = recorder.currentTime
-            }
         } catch {
             status = "Could not start recording: \(error.localizedDescription)"
         }
@@ -6289,6 +6303,9 @@ extension String {
 }
 
 enum ImportLogger {
+    private static let queue = DispatchQueue(label: "ShadowCoach.importLogger", qos: .utility)
+    private static let maximumLogSize = 2 * 1_024 * 1_024
+
     static var logURL: URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ShadowCoach", isDirectory: true)
@@ -6297,18 +6314,33 @@ enum ImportLogger {
     }
 
     static func write(_ message: String) {
-        let formatter = ISO8601DateFormatter()
-        let line = "\(formatter.string(from: Date())) \(message)\n"
-        guard let data = line.data(using: .utf8) else { return }
+        let timestamp = Date()
+        queue.async {
+            let formatter = ISO8601DateFormatter()
+            let line = "\(formatter.string(from: timestamp)) \(message)\n"
+            guard let data = line.data(using: .utf8) else { return }
+            let destination = logURL
+            rotateLogIfNeeded(at: destination, incomingBytes: data.count)
 
-        if FileManager.default.fileExists(atPath: logURL.path),
-           let handle = try? FileHandle(forWritingTo: logURL) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: logURL, options: .atomic)
+            if FileManager.default.fileExists(atPath: destination.path),
+               let handle = try? FileHandle(forWritingTo: destination) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: destination, options: .atomic)
+            }
         }
+    }
+
+    private static func rotateLogIfNeeded(at url: URL, incomingBytes: Int) {
+        let existingBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?
+            .intValue ?? 0
+        guard existingBytes + incomingBytes > maximumLogSize else { return }
+
+        let archivedURL = url.deletingLastPathComponent().appendingPathComponent("import.previous.log")
+        try? FileManager.default.removeItem(at: archivedURL)
+        try? FileManager.default.moveItem(at: url, to: archivedURL)
     }
 }
 
@@ -7208,8 +7240,74 @@ enum KeychainStore {
     }
 }
 
+private struct RecordingDurationText: View {
+    let startedAt: Date?
+    let savedDuration: Double
+
+    var body: some View {
+        Group {
+            if let startedAt {
+                TimelineView(.periodic(from: .now, by: 0.2)) { context in
+                    Text(formatted(max(0, context.date.timeIntervalSince(startedAt))))
+                }
+            } else {
+                Text(formatted(savedDuration))
+            }
+        }
+    }
+
+    private func formatted(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
+private struct LibraryViewIndex {
+    let allLines: [PracticeLine]
+    let visibleLines: [PracticeLine]
+    let allLinesBySource: [String: [PracticeLine]]
+    let visibleLinesBySource: [String: [PracticeLine]]
+    let visibleSections: [LibrarySection]
+    let userSources: Set<String>
+
+    static let empty = LibraryViewIndex(
+        allLines: [],
+        visibleLines: [],
+        allLinesBySource: [:],
+        visibleLinesBySource: [:],
+        visibleSections: [],
+        userSources: []
+    )
+}
+
+private struct DailyPracticeCount: Identifiable {
+    var id: Date { date }
+    let date: Date
+    let count: Int
+}
+
+private struct PracticeDashboardSnapshot {
+    let dueReviewCount: Int
+    let availableReviewCount: Int
+    let attemptsToday: Int
+    let currentStreak: Int
+    let totalAttempts: Int
+    let recentDailyCounts: [DailyPracticeCount]
+
+    static let empty = PracticeDashboardSnapshot(
+        dueReviewCount: 0,
+        availableReviewCount: 0,
+        attemptsToday: 0,
+        currentStreak: 0,
+        totalAttempts: 0,
+        recentDailyCounts: []
+    )
+}
+
 struct ContentView: View {
     @EnvironmentObject private var coach: SpeechCoach
+    @State private var libraryIndex = LibraryViewIndex.empty
+    @State private var practiceDashboard = PracticeDashboardSnapshot.empty
     @State private var expandedSources: Set<String> = []
     @State private var keyMonitor: Any?
     @State private var librarySearch = ""
@@ -7236,11 +7334,11 @@ struct ContentView: View {
     private let levels = ["A2", "B1", "B2", "C1"]
 
     private var visibleLines: [PracticeLine] {
-        filteredLines(from: coach.importedLines + coach.generatedLines + PracticeLine.library)
+        libraryIndex.visibleLines
     }
 
     private var allLines: [PracticeLine] {
-        coach.importedLines + coach.generatedLines + PracticeLine.library
+        libraryIndex.allLines
     }
 
     private var appAppearance: AppAppearanceOption {
@@ -7257,12 +7355,12 @@ struct ContentView: View {
 
     private var currentGroupLines: [PracticeLine] {
         guard let source = coach.selectedLine?.source else { return visibleLines }
-        let lines = visibleLines.filter { $0.source == source }
+        let lines = libraryIndex.visibleLinesBySource[source] ?? []
         return lines.isEmpty ? visibleLines : lines
     }
 
     private var userSources: Set<String> {
-        Set((coach.importedLines + coach.generatedLines).map(\.source))
+        libraryIndex.userSources
     }
 
     private var selectedIndexText: String {
@@ -7274,15 +7372,7 @@ struct ContentView: View {
     }
 
     private var visibleSections: [LibrarySection] {
-        var sourceOrder: [String] = []
-        var grouped: [String: [PracticeLine]] = [:]
-        for line in visibleLines {
-            if grouped[line.source] == nil {
-                sourceOrder.append(line.source)
-            }
-            grouped[line.source, default: []].append(line)
-        }
-        return sourceOrder.map { LibrarySection(source: $0, lines: grouped[$0] ?? []) }
+        libraryIndex.visibleSections
     }
 
     var body: some View {
@@ -7333,11 +7423,33 @@ struct ContentView: View {
             }
             coach.loadLibrary()
             coach.loadPracticeStore()
-            coach.restoreLastSelectedLine(from: allLines)
+            let loadedLines = coach.importedLines + coach.generatedLines + PracticeLine.library
+            refreshLibraryIndex(using: loadedLines)
+            refreshPracticeDashboard(using: loadedLines)
+            coach.restoreLastSelectedLine(from: loadedLines)
             expandSelectedSource()
             coach.hasRecording = FileManager.default.fileExists(atPath: coach.recordingURL.path)
             installKeyboardMonitor()
             scheduleInitialFocusRelease()
+        }
+        .onChange(of: coach.libraryRevision) { _ in
+            refreshLibraryIndex()
+            refreshPracticeDashboard()
+        }
+        .onChange(of: coach.practiceRevision) { _ in
+            if libraryFilter.dependsOnPracticeHistory {
+                refreshLibraryIndex()
+            }
+            refreshPracticeDashboard()
+        }
+        .onChange(of: librarySearch) { _ in
+            refreshLibraryIndex()
+        }
+        .onChange(of: libraryFilter) { _ in
+            refreshLibraryIndex()
+        }
+        .onChange(of: coach.dailyReviewLimit) { _ in
+            refreshPracticeDashboard()
         }
         .onChange(of: coach.selectedLineID) { _ in
             expandSelectedSource()
@@ -7353,12 +7465,66 @@ struct ContentView: View {
                 coach.loadApiKey()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPracticeDashboard()
+            if libraryFilter == .needsReview {
+                refreshLibraryIndex()
+            }
+        }
         .onDisappear {
             if let keyMonitor {
                 NSEvent.removeMonitor(keyMonitor)
                 self.keyMonitor = nil
             }
         }
+    }
+
+    private func refreshLibraryIndex(using suppliedLines: [PracticeLine]? = nil) {
+        let userLines = coach.importedLines + coach.generatedLines
+        let lines = suppliedLines ?? (userLines + PracticeLine.library)
+        let visible = filteredLines(from: lines)
+        let allGroups = groupLinesBySource(lines)
+        let visibleGroups = groupLinesBySource(visible)
+
+        libraryIndex = LibraryViewIndex(
+            allLines: lines,
+            visibleLines: visible,
+            allLinesBySource: allGroups.groups,
+            visibleLinesBySource: visibleGroups.groups,
+            visibleSections: visibleGroups.order.map {
+                LibrarySection(source: $0, lines: visibleGroups.groups[$0] ?? [])
+            },
+            userSources: Set(userLines.map(\.source))
+        )
+    }
+
+    private func refreshPracticeDashboard(using suppliedLines: [PracticeLine]? = nil) {
+        let lines = suppliedLines ?? libraryIndex.allLines
+        let dailyCounts = coach.recentDailyCounts().map {
+            DailyPracticeCount(date: $0.date, count: $0.count)
+        }
+        practiceDashboard = PracticeDashboardSnapshot(
+            dueReviewCount: coach.totalDueReviewCount(in: lines),
+            availableReviewCount: coach.availableReviewCount(in: lines),
+            attemptsToday: coach.attempts(on: Date()),
+            currentStreak: coach.currentStreak(),
+            totalAttempts: coach.allAttempts().count,
+            recentDailyCounts: dailyCounts
+        )
+    }
+
+    private func groupLinesBySource(
+        _ lines: [PracticeLine]
+    ) -> (order: [String], groups: [String: [PracticeLine]]) {
+        var order: [String] = []
+        var groups: [String: [PracticeLine]] = [:]
+        for line in lines {
+            if groups[line.source] == nil {
+                order.append(line.source)
+            }
+            groups[line.source, default: []].append(line)
+        }
+        return (order, groups)
     }
 
     private func installKeyboardMonitor() {
@@ -7598,7 +7764,10 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     Image(systemName: coach.isRecording ? "waveform.circle.fill" : "checkmark.circle.fill")
                         .foregroundStyle(coach.isRecording ? Theme.danger : Theme.success)
-                    Text(formatDuration(coach.recordingDuration))
+                    RecordingDurationText(
+                        startedAt: coach.recordingStartedAt,
+                        savedDuration: coach.recordingDuration
+                    )
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
@@ -7615,7 +7784,7 @@ struct ContentView: View {
                     coach.startReviewSession(in: allLines)
                 }
             } label: {
-                let count = coach.availableReviewCount(in: allLines)
+                let count = practiceDashboard.availableReviewCount
                 Label(
                     coach.isReviewSessionActive ? "End Review" : (count > 0 ? "Review \(count)" : "Review"),
                     systemImage: coach.isReviewSessionActive ? "xmark" : "brain.head.profile"
@@ -8178,8 +8347,8 @@ struct ContentView: View {
 
     private var reviewButtonHelp: String {
         if coach.isReviewSessionActive { return "Pause this review session" }
-        let total = coach.totalDueReviewCount(in: allLines)
-        let available = coach.availableReviewCount(in: allLines)
+        let total = practiceDashboard.dueReviewCount
+        let available = practiceDashboard.availableReviewCount
         if total == 0 { return "No sentences are due" }
         if available == 0 { return "Today's review goal is complete" }
         if available < total { return "Start \(available) of \(total) due sentences" }
@@ -8188,7 +8357,7 @@ struct ContentView: View {
 
     private var previousReviewLine: PracticeLine? {
         guard let selectedLine = coach.selectedLine else { return nil }
-        let sourceLines = allLines.filter { $0.source == selectedLine.source }
+        let sourceLines = libraryIndex.allLinesBySource[selectedLine.source] ?? []
         guard let index = sourceLines.firstIndex(where: { $0.id == selectedLine.id }), index > 0 else {
             return nil
         }
@@ -9532,7 +9701,10 @@ struct ContentView: View {
                     .background(subtleBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else if !coach.analysis.isEmpty {
-                    CoachFeedbackView(markdown: coach.analysis)
+                    CoachFeedbackView(
+                        markdown: coach.analysis,
+                        textScale: feedbackTextSize.scale
+                    )
                         .equatable()
                         .textSelection(.enabled)
                 }
@@ -10264,7 +10436,7 @@ struct ContentView: View {
                     Label("Practice Stats", systemImage: "calendar")
                         .font(scaledFeedbackFont(14, scale: feedbackTextSize.scale, weight: .semibold))
                     Spacer()
-                    Text("\(coach.attempts(on: Date())) today · \(coach.currentStreak())d streak")
+                    Text("\(practiceDashboard.attemptsToday) today · \(practiceDashboard.currentStreak)d streak")
                         .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
                         .foregroundStyle(.secondary)
                     Image(systemName: showingPracticeStats ? "chevron.down" : "chevron.right")
@@ -10278,9 +10450,9 @@ struct ContentView: View {
             if showingPracticeStats {
                 Divider()
                 HStack(spacing: 8) {
-                    statTile(title: "Today", value: "\(coach.attempts(on: Date()))")
-                    statTile(title: "Streak", value: "\(coach.currentStreak())d")
-                    statTile(title: "Total", value: "\(coach.allAttempts().count)")
+                    statTile(title: "Today", value: "\(practiceDashboard.attemptsToday)")
+                    statTile(title: "Streak", value: "\(practiceDashboard.currentStreak)d")
+                    statTile(title: "Total", value: "\(practiceDashboard.totalAttempts)")
                 }
 
                 calendarHeatmap
@@ -10306,7 +10478,7 @@ struct ContentView: View {
     }
 
     private var calendarHeatmap: some View {
-        let days = coach.recentDailyCounts()
+        let days = practiceDashboard.recentDailyCounts
         let columns = Array(repeating: GridItem(.flexible(), spacing: 5), count: 7)
 
         return LazyVGrid(columns: columns, spacing: 5) {
@@ -10399,11 +10571,11 @@ struct CoachConversationMessageView: View {
 }
 
 struct CoachFeedbackView: View, Equatable {
-    @Environment(\.feedbackTextScale) private var textScale
     let markdown: String
+    let textScale: CGFloat
 
     static func == (lhs: CoachFeedbackView, rhs: CoachFeedbackView) -> Bool {
-        lhs.markdown == rhs.markdown
+        lhs.markdown == rhs.markdown && lhs.textScale == rhs.textScale
     }
 
     private var sections: [CoachFeedbackSection] {
@@ -10431,7 +10603,7 @@ struct CoachFeedbackView: View, Equatable {
 
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(section.items) { item in
-                            CoachFeedbackItemRow(item: item, tint: section.tint)
+                            CoachFeedbackItemRow(item: item, tint: section.tint, textScale: textScale)
                         }
                     }
                 }
@@ -10449,9 +10621,9 @@ struct CoachFeedbackView: View, Equatable {
 }
 
 struct CoachFeedbackItemRow: View {
-    @Environment(\.feedbackTextScale) private var textScale
     let item: CoachFeedbackItem
     let tint: Color
+    let textScale: CGFloat
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -11894,6 +12066,15 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     case tts
 
     var id: String { rawValue }
+
+    var dependsOnPracticeHistory: Bool {
+        switch self {
+        case .favorites, .done, .needsReview, .new:
+            return true
+        case .all, .realAudio, .tts:
+            return false
+        }
+    }
 
     var label: String {
         switch self {
