@@ -219,6 +219,32 @@ final class RepositorySmokeTests: XCTestCase {
         XCTAssertEqual(decoded.coachConversation, conversation)
     }
 
+    func testOpenResponseConversationRoundTripsWithStageCache() throws {
+        let conversation = [
+            CoachConversationMessage(role: .user, text: "Why does this sound formal?"),
+            CoachConversationMessage(role: .assistant, text: "Use this shorter spoken version instead.")
+        ]
+        let cache = OpenResponseAnalysisCache(
+            createdAt: Date(),
+            activity: .freeExpression,
+            transcript: "I ruled out the first cause and checked the logs.",
+            learningTarget: nil,
+            coachFeedback: "## 沟通效果\n意思清楚。",
+            feedbackProvider: .codex,
+            usedAICoach: true,
+            coachModel: "test-model",
+            transcriptModel: "test-transcriber",
+            coachConversation: conversation
+        )
+
+        let decoded = try JSONDecoder().decode(
+            OpenResponseAnalysisCache.self,
+            from: JSONEncoder().encode(cache)
+        )
+        XCTAssertEqual(decoded.activity, .freeExpression)
+        XCTAssertEqual(decoded.coachConversation, conversation)
+    }
+
     func testOlderAnalysisCacheDecodesWithoutReferenceOriginField() throws {
         let analysis = makeRecordingAnalysis(reference: "I checked the records.", transcript: "I checked records")
         var object = try XCTUnwrap(
@@ -456,14 +482,90 @@ final class RepositorySmokeTests: XCTestCase {
         XCTAssertEqual(LearningPathEngine.completedCount(for: progress), 9)
     }
 
-    func testChunkExtractorFindsReusableExpression() {
-        let chunks = LearningChunkExtractor.extract(
+    func testLearningTargetExtractorFindsReusableExpression() {
+        let targets = LearningTargetExtractor.extract(
             from: "The robot was on the way to the target when the position check failed."
         )
 
-        XCTAssertTrue(chunks.contains("on the way to"))
-        XCTAssertLessThanOrEqual(chunks.count, 3)
-        XCTAssertEqual(Set(chunks).count, chunks.count)
+        XCTAssertTrue(targets.contains(where: { $0.text.lowercased() == "on the way to" }))
+        XCTAssertEqual(targets.first?.kind, .fixedExpression)
+        XCTAssertLessThanOrEqual(targets.count, 3)
+        XCTAssertEqual(Set(targets.map(\.id)).count, targets.count)
+    }
+
+    func testLearningTargetExtractorDoesNotInventValueForPlainFact() {
+        XCTAssertTrue(LearningTargetExtractor.extract(from: "I am Linhao Bai.").isEmpty)
+        XCTAssertTrue(LearningTargetExtractor.extract(from: "The robot is LM174.").isEmpty)
+    }
+
+    func testLearningTargetExtractorReturnsGeneralizedSentenceFrame() {
+        let targets = LearningTargetExtractor.extract(
+            from: "The more carefully I checked the logs, the more clearly the pattern appeared."
+        )
+        let contrast = targets.first(where: { $0.kind == .sentenceFrame })
+
+        XCTAssertEqual(contrast?.frame, "the more [condition], the more [result]")
+        XCTAssertTrue(contrast?.note.contains("together") == true)
+    }
+
+    func testLearningTargetAIParserRejectsWeakOrIdentifierBasedFragments() throws {
+        let sentence = "LM174 was there, but I had to rule out a mapping issue."
+        let raw = """
+        [
+          {"text":"LM174 was there","kind":"collocation","frame":null,"note":"Looks specific."},
+          {"text":"rule out","kind":"phrasalVerb","frame":"rule out [possible cause]","note":"Useful for eliminating a possible cause."}
+        ]
+        """
+
+        let targets = try LearningTargetAIParser.parse(raw, sentence: sentence)
+
+        XCTAssertEqual(targets.map(\.text), ["rule out"])
+    }
+
+    func testOpenResponsePromptsUseDifferentLearningObjectives() {
+        let target = LearningTarget(
+            text: "rule out",
+            kind: .phrasalVerb,
+            frame: "rule out [possible cause]",
+            note: "Useful for eliminating a possible cause."
+        )
+        let transformation = OpenResponseCoachPrompt.make(
+            activity: .transformation,
+            transcript: "I ruled out a battery problem at work.",
+            learningTarget: target,
+            originalIdea: "I ruled out a mapping issue.",
+            contextBefore: nil,
+            contextAfter: nil
+        )
+        let freeSpeaking = OpenResponseCoachPrompt.make(
+            activity: .freeExpression,
+            transcript: "Last week I had to rule out several causes before restarting the robot.",
+            learningTarget: target,
+            originalIdea: "I ruled out a mapping issue.",
+            contextBefore: nil,
+            contextAfter: nil
+        )
+
+        XCTAssertTrue(transformation.contains("## 任务完成度"))
+        XCTAssertTrue(transformation.contains("genuinely different situation"))
+        XCTAssertTrue(freeSpeaking.contains("## 沟通效果"))
+        XCTAssertTrue(freeSpeaking.contains("communication first"))
+        XCTAssertTrue(transformation.contains("Never score exact recall"))
+        XCTAssertTrue(freeSpeaking.contains("Never score exact recall"))
+        XCTAssertNotEqual(transformation, freeSpeaking)
+    }
+
+    func testRealUsePromptNeverPretendsToHaveAudioEvidence() {
+        let prompt = RealUseCoachPrompt.make(
+            outcome: .hesitated,
+            actualWords: "I want to rule out one more cause.",
+            learningTarget: nil,
+            originalSentence: "We should rule out a mapping issue first."
+        )
+
+        XCTAssertTrue(prompt.contains("no recording"))
+        XCTAssertTrue(prompt.contains("Never discuss pronunciation"))
+        XCTAssertTrue(prompt.contains("## 下次一句话"))
     }
 
     private func repositoryRoot() -> URL {

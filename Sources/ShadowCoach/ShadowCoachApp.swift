@@ -34,6 +34,7 @@ enum FocusedInput: Hashable {
     case sentenceEditor
     case librarySearch
     case coachQuestion
+    case realUseWords
 }
 
 private enum LibraryDeletionTarget: Identifiable {
@@ -389,6 +390,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     @Published private(set) var reviewSessionPosition = 0
     @Published private(set) var reviewSessionTotal = 0
     @Published private(set) var activeRecordingActivity: PracticeActivity = .shadowing
+    @Published private(set) var isFindingLearningTargets = false
+    @Published var realUseOutcome: RealUseOutcome = .worked
+    @Published var realUseActualWords = ""
     @Published var selectedAttemptRelativePathForAnalysis: String?
     @Published var phraseTranslation = ""
     @Published var isTranslatingPhrase = false
@@ -476,6 +480,25 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         return attempt(forRelativePath: selectedAttemptRelativePathForAnalysis)?.resolvedActivity
     }
 
+    var selectedAttemptRecordingURL: URL? {
+        guard let selectedAttemptRelativePathForAnalysis else { return nil }
+        let url = appSupportDirectory.appendingPathComponent(selectedAttemptRelativePathForAnalysis)
+        return isUsableRecording(at: url) ? url : nil
+    }
+
+    var analyzableRecordingURL: URL? {
+        selectedAttemptRecordingURL ?? analysisRecordingURL
+    }
+
+    var selectedOpenResponseAnalysis: OpenResponseAnalysisCache? {
+        guard let selectedAttemptRelativePathForAnalysis,
+              let attempt = attempt(forRelativePath: selectedAttemptRelativePathForAnalysis),
+              !attempt.resolvedActivity.comparesWithReference else {
+            return nil
+        }
+        return attempt.openResponseAnalysisCache
+    }
+
     var libraryURL: URL {
         appSupportDirectory.appendingPathComponent("library.json")
     }
@@ -557,6 +580,15 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         sentenceTranslation = ""
         sentenceTranslationRequestID = UUID()
         clearPhraseLookup()
+        if let reflection = practiceStore.progress[line.id]?.learningPath?.realUseReflection {
+            realUseOutcome = reflection.outcome
+            realUseActualWords = reflection.actualWords
+            analysis = reflection.coachFeedback
+                ?? realUseFallbackFeedback(outcome: reflection.outcome, learningTarget: currentLearningTarget)
+        } else {
+            realUseOutcome = .worked
+            realUseActualWords = ""
+        }
         activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
         savePracticeStore()
         status = "Sentence loaded. Listen first, then repeat from memory."
@@ -1094,13 +1126,27 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         LearningPathEngine.completedCount(for: currentProgress())
     }
 
-    var currentLearningChunks: [String] {
-        LearningChunkExtractor.extract(from: sentence)
+    var currentLearningTargets: [LearningTarget] {
+        if let cached = currentProgress().learningPath?.suggestedTargets {
+            return cached
+        }
+        return LearningTargetExtractor.extract(from: sentence)
     }
 
-    var currentLearningChunk: String? {
-        let stored = currentProgress().learningPath?.selectedChunk
-        return stored ?? currentLearningChunks.first
+    var currentLearningTarget: LearningTarget? {
+        if let selectedTarget = currentProgress().learningPath?.selectedTarget {
+            return selectedTarget
+        }
+        if let legacyChunk = currentProgress().learningPath?.selectedChunk,
+           !legacyChunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return LearningTarget(
+                text: legacyChunk,
+                kind: .collocation,
+                note: "Saved by an earlier Shadow Coach version.",
+                source: .legacy
+            )
+        }
+        return currentLearningTargets.first
     }
 
     var currentTransferContext: TransferContext {
@@ -1111,22 +1157,100 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         markCurrentLearningStage(.input)
         isSentenceVisible = true
         status = "Meaning confirmed. Now notice one reusable expression."
-    }
-
-    func selectLearningChunk(_ chunk: String) {
-        updateCurrentLearningPath { path in
-            path.selectedChunk = chunk
+        if useAICoach,
+           feedbackProvider == .codex,
+           currentProgress().learningPath?.suggestedTargets == nil {
+            findBetterLearningTargets()
         }
-        status = "Selected \"\(chunk)\""
     }
 
-    func completeNoticing(with chunk: String) {
+    func selectLearningTarget(_ target: LearningTarget) {
         updateCurrentLearningPath { path in
-            path.selectedChunk = chunk
+            path.selectedTarget = target
+            path.selectedChunk = target.text
+        }
+        status = "Selected \"\(target.displayText)\""
+    }
+
+    func completeNoticing(with target: LearningTarget?) {
+        updateCurrentLearningPath { path in
+            path.selectedTarget = target
+            path.selectedChunk = target?.text
             path.mark(.noticing)
         }
         activeRecordingActivity = .shadowing
-        status = "Expression saved. Listen again and copy the speaker's delivery."
+        status = target == nil
+            ? "No standalone learning target saved. Practice this line as a complete message."
+            : "Learning target saved. Listen again and copy the speaker's delivery."
+    }
+
+    func findBetterLearningTargets() {
+        guard !isFindingLearningTargets, let selectedLineID else { return }
+        let provider = feedbackProvider
+        let apiKeySnapshot = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if provider == .gemini, apiKeySnapshot.isEmpty {
+            status = "Add your Gemini API key in Settings, or switch the coach provider to Local Codex."
+            return
+        }
+
+        let sentenceSnapshot = sentence
+        let sourceSnapshot = selectedLine.map { "\($0.source) · \($0.title)" } ?? "Unknown source"
+        let contextSnapshot = neighboringContext(for: selectedLine)
+        isFindingLearningTargets = true
+        status = "Finding genuinely reusable language..."
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let prompt = LearningTargetPrompt.make(
+                    sentence: sentenceSnapshot,
+                    source: sourceSnapshot,
+                    contextBefore: contextSnapshot.before,
+                    contextAfter: contextSnapshot.after
+                )
+                let raw: String
+                switch provider {
+                case .codex:
+                    raw = try await CodexFeedbackClient.run(
+                        prompt: prompt,
+                        model: CodexFeedbackClient.coachingModel,
+                        reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                    )
+                case .gemini:
+                    raw = try await self.requestGeminiText(
+                        prompt: prompt,
+                        apiKey: apiKeySnapshot,
+                        maxOutputTokens: 700
+                    )
+                }
+                let targets = try LearningTargetAIParser.parse(raw, sentence: sentenceSnapshot)
+                await MainActor.run {
+                    guard self.selectedLineID == selectedLineID else {
+                        self.isFindingLearningTargets = false
+                        return
+                    }
+                    self.updateCurrentLearningPath { path in
+                        path.suggestedTargets = targets
+                        path.targetSuggestionModel = provider == .codex
+                            ? CodexFeedbackClient.coachingModel
+                            : self.geminiModel
+                        if let selected = path.selectedTarget,
+                           !targets.contains(where: { $0.id == selected.id }) {
+                            path.selectedTarget = nil
+                            path.selectedChunk = nil
+                        }
+                    }
+                    self.isFindingLearningTargets = false
+                    self.status = targets.isEmpty
+                        ? "No standalone high-value learning target found. Practice the sentence as a whole."
+                        : "Found \(targets.count) reusable learning target\(targets.count == 1 ? "" : "s")"
+                }
+            } catch {
+                await MainActor.run {
+                    self.isFindingLearningTargets = false
+                    self.status = "Could not refine learning targets: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     func setTransferContext(_ context: TransferContext) {
@@ -1149,8 +1273,123 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func markRealCommunicationComplete() {
-        markCurrentLearningStage(.realCommunication)
-        status = "Real use saved. Finish the loop with feedback and one corrected retry."
+        guard !isAnalyzing, let selectedLineID else { return }
+        let words = realUseActualWords.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outcome = realUseOutcome
+        let target = currentLearningTarget
+        let sentenceSnapshot = sentence
+        let provider = feedbackProvider
+        let apiKeySnapshot = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldUseAI = useAICoach && !words.isEmpty
+        let providerIsReady = provider == .codex || !apiKeySnapshot.isEmpty
+        let fallback = realUseFallbackFeedback(outcome: outcome, learningTarget: target)
+        let coreReflection = RealUseReflection(
+            createdAt: Date(),
+            outcome: outcome,
+            actualWords: words,
+            coachFeedback: nil,
+            feedbackProvider: provider.rawValue,
+            coachModel: provider == .codex ? CodexFeedbackClient.coachingModel : nil
+        )
+        saveRealUseReflection(coreReflection, for: selectedLineID)
+        analysis = fallback
+
+        guard shouldUseAI else {
+            status = words.isEmpty
+                ? "Real use saved. Add what you said next time for precise language feedback."
+                : "Real use saved. Enable AI Coach for wording feedback."
+            return
+        }
+        guard providerIsReady else {
+            status = "Real use saved. Add a Gemini key or switch to Local Codex for wording feedback."
+            return
+        }
+
+        isAnalyzing = true
+        status = "Reviewing how the target worked in real use..."
+        let prompt = RealUseCoachPrompt.make(
+            outcome: outcome,
+            actualWords: words,
+            learningTarget: target,
+            originalSentence: sentenceSnapshot
+        )
+        Task.detached(priority: .userInitiated) {
+            do {
+                let raw: String
+                switch provider {
+                case .codex:
+                    raw = try await CodexFeedbackClient.run(
+                        prompt: prompt,
+                        model: CodexFeedbackClient.coachingModel,
+                        reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                    )
+                case .gemini:
+                    raw = try await self.requestGeminiText(
+                        prompt: prompt,
+                        apiKey: apiKeySnapshot,
+                        maxOutputTokens: 700
+                    )
+                }
+                let cleaned = CoachFeedbackSanitizer.clean(raw)
+                let completed = RealUseReflection(
+                    createdAt: coreReflection.createdAt,
+                    outcome: outcome,
+                    actualWords: words,
+                    coachFeedback: cleaned,
+                    feedbackProvider: provider.rawValue,
+                    coachModel: provider == .codex ? CodexFeedbackClient.coachingModel : nil
+                )
+                await MainActor.run {
+                    self.saveRealUseReflection(completed, for: selectedLineID)
+                    if self.selectedLineID == selectedLineID {
+                        self.analysis = cleaned
+                        self.status = "Real-use feedback ready"
+                    }
+                    self.isAnalyzing = false
+                }
+            } catch {
+                await MainActor.run {
+                    if self.selectedLineID == selectedLineID {
+                        self.analysis = fallback
+                        self.status = "Real use saved. Coach feedback failed: \(error.localizedDescription)"
+                    }
+                    self.isAnalyzing = false
+                }
+            }
+        }
+    }
+
+    private func saveRealUseReflection(_ reflection: RealUseReflection, for lineID: UUID) {
+        var progress = practiceStore.progress[lineID] ?? PracticeProgress()
+        var path = progress.learningPath ?? LearningPathProgress()
+        path.realUseReflection = reflection
+        path.mark(.realCommunication)
+        progress.learningPath = path
+        practiceStore.progress[lineID] = progress
+        savePracticeStore()
+    }
+
+    private func realUseFallbackFeedback(
+        outcome: RealUseOutcome,
+        learningTarget: LearningTarget?
+    ) -> String {
+        let target = learningTarget?.displayText ?? "the main idea"
+        let nextStep: String
+        switch outcome {
+        case .worked:
+            nextStep = "在另一个真实场景再用一次 **\(target)**，把一次成功变成可调用的表达。"
+        case .hesitated:
+            nextStep = "先准备一个只含一个信息点的短句，再用 **\(target)** 完成它。"
+        case .didNotLand:
+            nextStep = "下次先用更短的句子表达核心意思，再补充细节并确认对方是否理解。"
+        }
+        return """
+        ## 真实使用记录
+        已记录结果：**\(outcome.label)**。这一步评价真实调用，而不是逐字复述。
+
+        ## 下一次
+        \(nextStep)
+        """
     }
 
     var feedbackCorrectionActionTitle: String {
@@ -1435,6 +1674,13 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 status = analysis.isEmpty
                     ? perfectRecallStatus(for: displayedAnalysis, fallback: "Playing saved attempt. Local analysis loaded; analyze to refresh coach feedback.")
                     : "Playing saved attempt. Loaded saved analysis."
+            } else if let cache = attempt.openResponseAnalysisCache {
+                recordingAnalysis = nil
+                analysis = cachedOpenResponseFeedback(from: cache)
+                loadOpenResponseConversation(from: cache)
+                status = analysis.isEmpty
+                    ? "Playing \(attempt.resolvedActivity.label.lowercased()). Transcript loaded."
+                    : "Playing \(attempt.resolvedActivity.label.lowercased()). Stage feedback loaded."
             } else {
                 recordingAnalysis = nil
                 analysis = ""
@@ -1464,6 +1710,13 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             status = analysis.isEmpty
                 ? perfectRecallStatus(for: displayedAnalysis, fallback: "Selected saved attempt. Local analysis loaded; analyze to refresh coach feedback.")
                 : "Selected saved attempt. Loaded saved analysis."
+        } else if let cache = attempt.openResponseAnalysisCache {
+            recordingAnalysis = nil
+            analysis = cachedOpenResponseFeedback(from: cache)
+            loadOpenResponseConversation(from: cache)
+            status = analysis.isEmpty
+                ? "Selected \(attempt.resolvedActivity.label.lowercased()). Transcript loaded."
+                : "Selected \(attempt.resolvedActivity.label.lowercased()). Stage feedback loaded."
         } else {
             recordingAnalysis = nil
             analysis = ""
@@ -1611,9 +1864,28 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         return CoachFeedbackSanitizer.clean(cache.geminiFeedback ?? "")
     }
 
+    private func cachedOpenResponseFeedback(from cache: OpenResponseAnalysisCache) -> String {
+        guard useAICoach, cache.usedAICoach else { return "" }
+        if let cachedProvider = cache.feedbackProvider, cachedProvider != feedbackProvider {
+            return ""
+        }
+        if feedbackProvider == .codex,
+           let cachedModel = cache.coachModel,
+           cachedModel != CodexFeedbackClient.coachingModel {
+            return ""
+        }
+        return CoachFeedbackSanitizer.clean(cache.coachFeedback ?? "")
+    }
+
     private func resetCoachConversation() {
         coachConversationRequestID = UUID()
         coachConversation = []
+        isAskingCodex = false
+    }
+
+    private func loadOpenResponseConversation(from cache: OpenResponseAnalysisCache) {
+        coachConversationRequestID = UUID()
+        coachConversation = cache.coachConversation ?? []
         isAskingCodex = false
     }
 
@@ -1641,6 +1913,33 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             learningPath.mark(.feedbackCorrection)
             progress.learningPath = learningPath
         }
+        practiceStore.progress[location.lineID] = progress
+        savePracticeStore()
+    }
+
+    private func saveOpenResponseAnalysisCache(_ cache: OpenResponseAnalysisCache, for audioURL: URL) {
+        guard let location = attemptLocation(for: audioURL),
+              var progress = practiceStore.progress[location.lineID],
+              progress.attempts.indices.contains(location.attemptIndex) else {
+            return
+        }
+        progress.attempts[location.attemptIndex].openResponseAnalysisCache = cache
+        practiceStore.progress[location.lineID] = progress
+        savePracticeStore()
+    }
+
+    private func saveOpenResponseConversation(
+        _ messages: [CoachConversationMessage],
+        for audioURL: URL
+    ) {
+        guard let location = attemptLocation(for: audioURL),
+              var progress = practiceStore.progress[location.lineID],
+              progress.attempts.indices.contains(location.attemptIndex),
+              var cache = progress.attempts[location.attemptIndex].openResponseAnalysisCache else {
+            return
+        }
+        cache.coachConversation = messages
+        progress.attempts[location.attemptIndex].openResponseAnalysisCache = cache
         practiceStore.progress[location.lineID] = progress
         savePracticeStore()
     }
@@ -1789,6 +2088,11 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     func askCodex(_ question: String) {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isAskingCodex else { return }
+        if let audioURL = selectedAttemptRecordingURL,
+           let cache = selectedOpenResponseAnalysis {
+            askCodexAboutOpenResponse(trimmed, cache: cache, audioURL: audioURL)
+            return
+        }
         guard let audioURL = analysisRecordingURL,
               let currentAnalysis = recordingAnalysis else {
             status = "Analyze a recording before asking Codex."
@@ -1837,6 +2141,219 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 }
             }
         }
+    }
+
+    private func askCodexAboutOpenResponse(
+        _ question: String,
+        cache: OpenResponseAnalysisCache,
+        audioURL: URL
+    ) {
+        let userMessage = CoachConversationMessage(role: .user, text: question)
+        let conversation = Array((coachConversation + [userMessage]).suffix(12))
+        let requestID = UUID()
+        coachConversationRequestID = requestID
+        coachConversation = conversation
+        isAskingCodex = true
+        saveOpenResponseConversation(conversation, for: audioURL)
+        status = "Asking Codex about this \(cache.activity.label.lowercased()) response..."
+        let prompt = OpenResponseFollowUpPrompt.make(
+            question: question,
+            cache: cache,
+            existingFeedback: analysis,
+            conversation: conversation
+        )
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let raw = try await CodexFeedbackClient.run(
+                    prompt: prompt,
+                    model: CodexFeedbackClient.coachingModel,
+                    reasoningEffort: CodexFeedbackClient.coachingReasoningEffort
+                )
+                let answer = CoachFeedbackSanitizer.clean(raw)
+                let completed = Array(
+                    (conversation + [CoachConversationMessage(role: .assistant, text: answer)]).suffix(12)
+                )
+                await MainActor.run {
+                    self.saveOpenResponseConversation(completed, for: audioURL)
+                    guard self.coachConversationRequestID == requestID else { return }
+                    self.coachConversation = completed
+                    self.isAskingCodex = false
+                    self.status = "Codex follow-up ready"
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.coachConversationRequestID == requestID else { return }
+                    self.isAskingCodex = false
+                    self.status = "Codex follow-up failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func analyzeSelectedAttempt(forceRefresh: Bool = false) {
+        if let activity = selectedAttemptActivity, !activity.comparesWithReference {
+            analyzeOpenResponse(forceRefresh: forceRefresh)
+        } else {
+            analyzeRecording(forceRefresh: forceRefresh)
+        }
+    }
+
+    private func analyzeOpenResponse(forceRefresh: Bool = false) {
+        guard !isAnalyzing else { return }
+        guard let audioURL = selectedAttemptRecordingURL,
+              let location = attemptLocation(for: audioURL),
+              let progress = practiceStore.progress[location.lineID],
+              progress.attempts.indices.contains(location.attemptIndex) else {
+            status = "Select a saved New Situation or Free Speaking recording first."
+            return
+        }
+        let attempt = progress.attempts[location.attemptIndex]
+        let activity = attempt.resolvedActivity
+        guard !activity.comparesWithReference else {
+            analyzeRecording(forceRefresh: forceRefresh)
+            return
+        }
+        if !forceRefresh, let cache = attempt.openResponseAnalysisCache {
+            recordingAnalysis = nil
+            analysis = cachedOpenResponseFeedback(from: cache)
+            loadOpenResponseConversation(from: cache)
+            status = analysis.isEmpty
+                ? "Loaded saved transcript. Enable AI Coach or analyze again for stage feedback."
+                : "Loaded saved \(activity.label.lowercased()) feedback"
+            return
+        }
+
+        let learningTarget = savedLearningTarget(from: progress)
+        let analysisLine = currentAnalysisLine(for: audioURL)
+        let originalIdea = analysisLine?.text ?? sentence
+        let context = neighboringContext(for: analysisLine)
+        let providerSnapshot = feedbackProvider
+        let apiKeySnapshot = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let useAICoachSnapshot = useAICoach
+        let selectedPathSnapshot = attempt.relativePath
+        let providerIsReady = providerSnapshot == .codex || !apiKeySnapshot.isEmpty
+
+        isAnalyzing = true
+        recordingAnalysis = nil
+        analysis = ""
+        resetCoachConversation()
+        status = activity == .transformation
+            ? "Transcribing your new sentence..."
+            : "Transcribing your free speaking..."
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let detailed = try await FastWhisperTranscriber.transcribeDetailed(
+                    audioURL,
+                    referenceText: learningTarget?.text ?? ""
+                )
+                let coreCache = OpenResponseAnalysisCache(
+                    createdAt: Date(),
+                    activity: activity,
+                    transcript: detailed.transcript,
+                    learningTarget: learningTarget,
+                    coachFeedback: nil,
+                    feedbackProvider: providerSnapshot,
+                    usedAICoach: useAICoachSnapshot,
+                    coachModel: providerSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                    transcriptModel: FastWhisperTranscriber.cacheIdentifier,
+                    coachConversation: attempt.openResponseAnalysisCache?.coachConversation
+                )
+
+                await MainActor.run {
+                    self.saveOpenResponseAnalysisCache(coreCache, for: audioURL)
+                    if self.selectedAttemptRelativePathForAnalysis == selectedPathSnapshot {
+                        self.analysis = ""
+                        if useAICoachSnapshot && providerIsReady {
+                            self.status = "Transcript ready. Generating \(activity.label.lowercased()) feedback..."
+                        } else if useAICoachSnapshot {
+                            self.status = "Transcript saved. Add a Gemini key or switch to Local Codex for stage feedback."
+                        } else {
+                            self.status = "Transcript saved. Enable AI Coach for stage-specific feedback."
+                        }
+                    }
+                }
+
+                guard useAICoachSnapshot, providerIsReady else {
+                    await MainActor.run { self.isAnalyzing = false }
+                    return
+                }
+
+                let prompt = OpenResponseCoachPrompt.make(
+                    activity: activity,
+                    transcript: detailed.transcript,
+                    learningTarget: learningTarget,
+                    originalIdea: originalIdea,
+                    contextBefore: context.before,
+                    contextAfter: context.after
+                )
+                let feedback: String
+                switch providerSnapshot {
+                case .codex:
+                    feedback = try await CodexFeedbackClient.run(
+                        prompt: prompt,
+                        model: CodexFeedbackClient.coachingModel,
+                        reasoningEffort: CodexFeedbackClient.coachingReasoningEffort,
+                        onPartial: { [weak self] partial in
+                            Task { @MainActor in
+                                guard let self,
+                                      self.selectedAttemptRelativePathForAnalysis == selectedPathSnapshot else { return }
+                                self.analysis = CoachFeedbackSanitizer.clean(partial)
+                            }
+                        }
+                    )
+                case .gemini:
+                    feedback = try await self.requestGeminiText(
+                        prompt: prompt,
+                        apiKey: apiKeySnapshot,
+                        maxOutputTokens: self.coachFeedbackDepth.maxOutputTokens
+                    )
+                }
+                let completedCache = OpenResponseAnalysisCache(
+                    createdAt: Date(),
+                    activity: activity,
+                    transcript: detailed.transcript,
+                    learningTarget: learningTarget,
+                    coachFeedback: CoachFeedbackSanitizer.clean(feedback),
+                    feedbackProvider: providerSnapshot,
+                    usedAICoach: useAICoachSnapshot,
+                    coachModel: providerSnapshot == .codex ? CodexFeedbackClient.coachingModel : nil,
+                    transcriptModel: FastWhisperTranscriber.cacheIdentifier,
+                    coachConversation: attempt.openResponseAnalysisCache?.coachConversation
+                )
+                await MainActor.run {
+                    self.saveOpenResponseAnalysisCache(completedCache, for: audioURL)
+                    if self.selectedAttemptRelativePathForAnalysis == selectedPathSnapshot {
+                        self.analysis = self.cachedOpenResponseFeedback(from: completedCache)
+                        self.status = "\(activity.label) feedback ready"
+                    }
+                    self.isAnalyzing = false
+                }
+            } catch {
+                await MainActor.run {
+                    if self.selectedAttemptRelativePathForAnalysis == selectedPathSnapshot {
+                        self.analysis = ""
+                        self.status = "\(activity.label) analysis failed: \(error.localizedDescription)"
+                    }
+                    self.isAnalyzing = false
+                }
+            }
+        }
+    }
+
+    private func savedLearningTarget(from progress: PracticeProgress) -> LearningTarget? {
+        if let selected = progress.learningPath?.selectedTarget { return selected }
+        if let legacy = progress.learningPath?.selectedChunk,
+           !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return LearningTarget(
+                text: legacy,
+                kind: .collocation,
+                note: "Saved by an earlier Shadow Coach version.",
+                source: .legacy
+            )
+        }
+        return nil
     }
 
     func analyzeRecording(forceRefresh: Bool = false) {
@@ -2769,6 +3286,45 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         return CoachFeedbackSanitizer.clean(text)
     }
 
+    private func requestGeminiText(
+        prompt: String,
+        apiKey: String,
+        maxOutputTokens: Int
+    ) async throws -> String {
+        let requestBody: [String: Any] = [
+            "contents": [
+                [
+                    "role": "user",
+                    "parts": [["text": prompt]]
+                ]
+            ],
+            "generationConfig": [
+                "temperature": 0.1,
+                "maxOutputTokens": maxOutputTokens
+            ]
+        ]
+
+        var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models/\(geminiModel):generateContent")!
+        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let detail = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw NSError(domain: "Gemini", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: detail])
+        }
+
+        let decoded = try JSONDecoder().decode(GeminiResponse.self, from: data)
+        let text = decoded.candidates.first?.content.parts.compactMap(\.text).joined(separator: "\n")
+        guard let text, !text.isEmpty else {
+            throw NSError(domain: "Gemini", code: -1, userInfo: [NSLocalizedDescriptionKey: "No text response returned"])
+        }
+        return text
+    }
+
     private func requestCodexFeedback(
         localAnalysis: RecordingAnalysis,
         onPartial: (@Sendable (String) -> Void)? = nil
@@ -3184,10 +3740,24 @@ struct RecordingAttempt: Identifiable, Codable, Hashable {
     let relativePath: String
     var activity: PracticeActivity? = nil
     var analysisCache: RecordingAnalysisCache? = nil
+    var openResponseAnalysisCache: OpenResponseAnalysisCache? = nil
 
     var resolvedActivity: PracticeActivity {
         activity ?? .shadowing
     }
+}
+
+struct OpenResponseAnalysisCache: Codable, Hashable {
+    let createdAt: Date
+    let activity: PracticeActivity
+    let transcript: String
+    let learningTarget: LearningTarget?
+    let coachFeedback: String?
+    let feedbackProvider: CoachFeedbackProvider?
+    let usedAICoach: Bool
+    let coachModel: String?
+    let transcriptModel: String
+    var coachConversation: [CoachConversationMessage]? = nil
 }
 
 struct CoachConversationMessage: Identifiable, Codable, Hashable {
@@ -6600,6 +7170,7 @@ struct ContentView: View {
             let acceptsTextInput = focusedInput == .generationTopic
                 || focusedInput == .sentenceEditor
                 || focusedInput == .coachQuestion
+                || focusedInput == .realUseWords
                 || (focusedInput == .librarySearch && isLibrarySearchEditing)
             if acceptsTextInput, isActivelyEditingText {
                 return event
@@ -7534,7 +8105,7 @@ struct ContentView: View {
                 .buttonStyle(PrimaryButtonStyle(color: learningActionColor(for: stage)))
                 .disabled(learningActionDisabled(for: stage))
             } else {
-                Text("This sentence now stays in your FSRS review queue. Reuse the saved chunk whenever a matching situation appears.")
+                Text("This sentence now stays in your FSRS review queue. Reuse the saved learning target whenever a matching situation appears.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -7580,38 +8151,39 @@ struct ContentView: View {
     private func learningStageOptions(_ stage: LearningPathStage) -> some View {
         switch stage {
         case .noticing:
-            let chunks = coach.currentLearningChunks
-            if chunks.isEmpty {
-                Text("No reusable chunk was found. You can still continue with the whole short sentence.")
+            let targets = coach.currentLearningTargets
+            VStack(alignment: .leading, spacing: 8) {
+                if targets.isEmpty {
+                    Label(
+                        "No high-value standalone target found. This sentence is better practiced as a complete message.",
+                        systemImage: "checkmark.circle"
+                    )
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
-                TokenFlowLayout(spacing: 7, rowSpacing: 7) {
-                    ForEach(chunks, id: \.self) { chunk in
-                        let selected = coach.currentLearningChunk == chunk
-                        Button {
-                            coach.selectLearningChunk(chunk)
-                        } label: {
-                            Text(chunk)
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 6)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(selected ? Theme.accent : Color.primary)
-                        .background(selected ? Theme.accent.opacity(0.12) : Theme.pill)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(selected ? Theme.accent.opacity(0.4) : Theme.border)
-                        )
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(targets) { target in
+                        learningTargetRow(target)
                     }
                 }
+
+                Button {
+                    coach.findBetterLearningTargets()
+                } label: {
+                    Label(
+                        coach.isFindingLearningTargets ? "Inspecting the sentence..." : "Refine with \(coach.feedbackProvider.label)",
+                        systemImage: "wand.and.stars"
+                    )
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+                .disabled(coach.isFindingLearningTargets)
             }
 
         case .transformation:
             VStack(alignment: .leading, spacing: 8) {
-                learningChunkCallout
+                learningTargetCallout
                 Picker(
                     "New situation",
                     selection: Binding(
@@ -7627,22 +8199,126 @@ struct ContentView: View {
                 .labelsHidden()
             }
 
-        case .freeExpression, .realCommunication:
-            learningChunkCallout
+        case .freeExpression:
+            learningTargetCallout
+
+        case .realCommunication:
+            VStack(alignment: .leading, spacing: 10) {
+                learningTargetCallout
+                Picker("How did it go?", selection: $coach.realUseOutcome) {
+                    ForEach(RealUseOutcome.allCases) { outcome in
+                        Label(outcome.label, systemImage: outcome.systemImage).tag(outcome)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                TextField(
+                    "What did you actually say? (optional)",
+                    text: $coach.realUseActualWords,
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .lineLimit(2...4)
+                .focused($focusedInput, equals: .realUseWords)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Theme.panel)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(Theme.border)
+                )
+
+                Text("Add your exact words for language feedback. Leave this blank to save only the real-use outcome.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
         default:
             EmptyView()
         }
     }
 
-    private var learningChunkCallout: some View {
+    private func learningTargetRow(_ target: LearningTarget) -> some View {
+        let selected = coach.currentLearningTarget?.id == target.id
+        return Button {
+            coach.selectLearningTarget(target)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(selected ? Theme.accent : Color.secondary)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(target.kind.label.uppercased())
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(target.source == .ai ? Theme.accent : Color.secondary)
+                        if target.source == .ai {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    Text(target.displayText)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if target.frame != nil, target.text.caseInsensitiveCompare(target.displayText) != .orderedSame {
+                        Text("From: \(target.text)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Text(target.note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(selected ? Theme.accent.opacity(0.08) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var learningTargetCallout: some View {
         HStack(spacing: 8) {
             Image(systemName: "quote.opening")
                 .foregroundStyle(Theme.accent)
-            Text(coach.currentLearningChunk ?? coach.sentence)
-                .font(.callout.weight(.semibold))
-                .lineLimit(2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(coach.currentLearningTarget?.displayText ?? "Transfer the main idea")
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(2)
+                if let target = coach.currentLearningTarget {
+                    Text(target.kind.label)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 0)
+            if coach.currentLearningTargets.count > 1 {
+                Menu {
+                    ForEach(coach.currentLearningTargets) { target in
+                        Button(target.displayText) {
+                            coach.selectLearningTarget(target)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .frame(width: 24, height: 24)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .help("Change learning target")
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -7651,12 +8327,12 @@ struct ContentView: View {
     }
 
     private func learningInstruction(for stage: LearningPathStage) -> String {
-        let chunk = coach.currentLearningChunk ?? "the key expression"
+        let target = coach.currentLearningTarget?.displayText ?? "the main idea"
         switch stage {
         case .input:
             return "Listen for the situation and meaning first. Reveal or translate only when needed, then confirm that the line makes sense to you."
         case .noticing:
-            return "Choose one reusable chunk. Listen again for its stress, reductions, and how its words connect instead of memorizing isolated words."
+            return "Choose one reusable sentence frame, expression, or collocation. If none is worth isolating, keep the complete message instead."
         case .shadowing:
             return "Copy the speaker's timing and phrasing, not just the words. Listen once, then record the full line from memory."
         case .retrieval:
@@ -7664,11 +8340,11 @@ struct ContentView: View {
         case .spacedReview:
             return "Rate the recall honestly. FSRS will choose the next interval from your result."
         case .transformation:
-            return "Keep \"\(chunk)\", but change the people, time, and details. Say one new sentence about \(coach.currentTransferContext.prompt)."
+            return "Keep \"\(target)\", but change the people, time, and details. Say one new sentence about \(coach.currentTransferContext.prompt)."
         case .freeExpression:
-            return "Speak for 30-60 seconds about a related experience or opinion. Use \"\(chunk)\" naturally, without copying the original sentence."
+            return "Speak for 30-60 seconds about a related experience or opinion. Use \"\(target)\" naturally, without copying the original sentence."
         case .realCommunication:
-            return "Use \"\(chunk)\" once in a real meeting, conversation, or voice message. Come back only after you have actually used it."
+            return "Use \"\(target)\" once in a real meeting, conversation, or voice message. Record what happened; this stage evaluates real communication, not exact recall."
         case .feedbackCorrection:
             return "Analyze an exact attempt, apply the most important feedback, then record one corrected retry. Optional Azure, prosody, and AI coaching stay under your settings."
         }
@@ -7677,12 +8353,15 @@ struct ContentView: View {
     private func learningActionTitle(for stage: LearningPathStage) -> String {
         switch stage {
         case .input: return "I understand this line"
-        case .noticing: return "Keep this chunk"
+        case .noticing: return coach.currentLearningTarget == nil ? "Continue with whole sentence" : "Keep this target"
         case .shadowing: return "Listen, then shadow"
         case .retrieval, .spacedReview: return "Recall without prompt"
         case .transformation: return coach.isRecording ? "Stop recording" : "Record new sentence"
         case .freeExpression: return coach.isRecording ? "Stop recording" : "Start free speaking"
-        case .realCommunication: return "I used it for real"
+        case .realCommunication:
+            return coach.realUseActualWords.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Save real use"
+                : "Review real use"
         case .feedbackCorrection: return coach.isRecording ? "Stop recording" : coach.feedbackCorrectionActionTitle
         }
     }
@@ -7716,8 +8395,7 @@ struct ContentView: View {
 
     private func learningActionDisabled(for stage: LearningPathStage) -> Bool {
         if coach.selectedLineID == nil { return true }
-        if stage == .noticing { return coach.currentLearningChunk == nil }
-        if stage == .feedbackCorrection { return coach.isAnalyzing }
+        if stage == .feedbackCorrection || stage == .realCommunication { return coach.isAnalyzing }
         return false
     }
 
@@ -7726,9 +8404,7 @@ struct ContentView: View {
         case .input:
             coach.completeInputUnderstanding()
         case .noticing:
-            if let chunk = coach.currentLearningChunk {
-                coach.completeNoticing(with: chunk)
-            }
+            coach.completeNoticing(with: coach.currentLearningTarget)
         case .shadowing:
             coach.speakSentence()
         case .retrieval, .spacedReview:
@@ -7742,6 +8418,7 @@ struct ContentView: View {
                 ? coach.stopRecording(autoAnalyze: false)
                 : coach.startRecording(activity: .freeExpression)
         case .realCommunication:
+            releaseTextInputFocus()
             coach.markRealCommunicationComplete()
         case .feedbackCorrection:
             if coach.isRecording {
@@ -8358,7 +9035,11 @@ struct ContentView: View {
         if attempt.resolvedActivity.comparesWithReference {
             analysisState = attempt.analysisCache == nil ? "Not analyzed" : "Analysis saved"
         } else {
-            analysisState = "Open response"
+            if let cache = attempt.openResponseAnalysisCache {
+                analysisState = cache.coachFeedback == nil ? "Transcript saved" : "Feedback saved"
+            } else {
+                analysisState = "Not analyzed"
+            }
         }
         return "\(formatAttemptDuration(attempt.duration)) · \(attempt.resolvedActivity.label) · \(analysisState)"
     }
@@ -8381,7 +9062,7 @@ struct ContentView: View {
         if coach.hasRecording {
             return "Recording Ready"
         }
-        if coach.analysisRecordingURL != nil {
+        if coach.analyzableRecordingURL != nil {
             return "Saved Attempt Available"
         }
         return "No Recording"
@@ -8421,6 +9102,11 @@ struct ContentView: View {
     }
 
     private var feedbackPipelineSummary: String {
+        if let activity = selectedOpenResponseActivity {
+            var parts = ["Whisper small", activity.label]
+            if coach.useAICoach { parts.append(coach.feedbackProvider.label) }
+            return parts.joined(separator: " · ")
+        }
         var parts = ["Whisper small"]
         if coach.useProsodyAnalysis { parts.append("Rhythm") }
         if coach.useAzureAssessment { parts.append("Azure") }
@@ -8467,16 +9153,16 @@ struct ContentView: View {
                 }
 
                 Button {
-                    coach.analyzeRecording(forceRefresh: true)
+                    coach.analyzeSelectedAttempt(forceRefresh: true)
                 } label: {
                     Label(
-                        coach.isAnalyzing ? "Analyzing..." : (coach.recordingAnalysis == nil ? "Analyze" : "Analyze Again"),
+                        coach.isAnalyzing ? "Analyzing..." : feedbackAnalyzeTitle,
                         systemImage: "waveform.badge.magnifyingglass"
                     )
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryButtonStyle(color: Theme.accent))
-                .disabled(coach.isAnalyzing || coach.isRecording || coach.analysisRecordingURL == nil)
+                .disabled(coach.isAnalyzing || coach.isRecording || coach.analyzableRecordingURL == nil)
 
                 if coach.isAnalyzing {
                     HStack(spacing: 7) {
@@ -8492,6 +9178,10 @@ struct ContentView: View {
 
                 if let recordingAnalysis = coach.recordingAnalysis {
                     recordingAnalysisPanel(recordingAnalysis)
+                }
+
+                if let openResponse = coach.selectedOpenResponseAnalysis {
+                    openResponseTranscriptPanel(openResponse)
                 }
 
                 if coach.analysis.isEmpty && coach.recordingAnalysis == nil {
@@ -8518,7 +9208,7 @@ struct ContentView: View {
                         .textSelection(.enabled)
                 }
 
-                if coach.recordingAnalysis != nil {
+                if coach.recordingAnalysis != nil || coach.selectedOpenResponseAnalysis != nil {
                     codexFollowUpPanel
                 }
 
@@ -8534,21 +9224,56 @@ struct ContentView: View {
         return activity
     }
 
+    private var feedbackAnalyzeTitle: String {
+        if let activity = selectedOpenResponseActivity {
+            return coach.selectedOpenResponseAnalysis == nil
+                ? "Analyze \(activity.label)"
+                : "Analyze \(activity.label) Again"
+        }
+        return coach.recordingAnalysis == nil ? "Analyze Shadowing" : "Analyze Shadowing Again"
+    }
+
+    private func openResponseTranscriptPanel(_ cache: OpenResponseAnalysisCache) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: cache.activity == .transformation ? "arrow.triangle.branch" : "quote.bubble.fill")
+                    .foregroundStyle(Theme.accent)
+                Text("What the app recognized")
+                    .font(scaledFeedbackFont(13, scale: feedbackTextSize.scale, weight: .semibold))
+                Spacer()
+                Text(cache.activity.label)
+                    .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Text(cache.transcript.isEmpty ? "No speech recognized." : cache.transcript)
+                .font(scaledFeedbackFont(13, scale: feedbackTextSize.scale))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Open responses are judged by task success and natural English, not word-for-word recall.")
+                .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(11)
+        .background(subtleBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     private var feedbackEmptyIcon: String {
         if selectedOpenResponseActivity != nil { return "quote.bubble" }
-        return coach.analysisRecordingURL == nil ? "mic" : "waveform.badge.magnifyingglass"
+        return coach.analyzableRecordingURL == nil ? "mic" : "waveform.badge.magnifyingglass"
     }
 
     private var feedbackEmptyTitle: String {
         if let activity = selectedOpenResponseActivity { return "\(activity.label) saved" }
-        return coach.analysisRecordingURL == nil ? "Record a sentence first" : "Ready to analyze"
+        return coach.analyzableRecordingURL == nil ? "Record a sentence first" : "Ready to analyze"
     }
 
     private var feedbackEmptyMessage: String {
         if selectedOpenResponseActivity != nil {
-            return "This is an open response, so it is not scored as an incorrect copy of the reference. Play it from Saved Attempts and continue the learning path."
+            return "Analyze this response for stage-specific feedback. It will not be scored as an incorrect copy of the reference."
         }
-        return coach.analysisRecordingURL == nil
+        return coach.analyzableRecordingURL == nil
             ? "Listen, record your answer, then come back here."
             : "Word comparison is local. Optional services run only when enabled."
     }
@@ -8562,7 +9287,11 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Ask Codex")
                         .font(scaledFeedbackFont(14, scale: feedbackTextSize.scale, weight: .semibold))
-                    Text("Continue with this recording's evidence")
+                    Text(
+                        selectedOpenResponseActivity == nil
+                            ? "Continue with this recording's evidence"
+                            : "Continue with this stage's transcript and goal"
+                    )
                         .font(scaledFeedbackFont(10, scale: feedbackTextSize.scale))
                         .foregroundStyle(.secondary)
                 }
