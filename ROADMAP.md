@@ -12,7 +12,7 @@ The roadmap is ordered by user value and contributor leverage, not by novelty.
 
 ## Contributor-Friendly Core
 
-- Extract persistent models and schema migrations from `main.swift`.
+- Extract persistent models and schema migrations from `ShadowCoachApp.swift`.
 - Extract subtitle parsing and sentence segmentation with fixture tests.
 - Extract transcript word diff and scoring rules with unit tests.
 - Define provider protocols for transcription, pronunciation, translation, and coaching.

@@ -10,8 +10,11 @@ Shadow Coach can interoperate with the following independently distributed tools
 | [WhisperKit](https://github.com/argmaxinc/WhisperKit) | Optional Apple-platform transcription fallback | Installed separately |
 | [Praat/Parselmouth](https://github.com/YannickJadoul/Parselmouth) | Local acoustic and prosody measurements | Installed separately |
 | [Codex CLI](https://github.com/openai/codex) | Optional local coaching provider | Installed separately |
+| [FSRS-6 / py-fsrs](https://github.com/open-spaced-repetition/py-fsrs) | Local adaptive review scheduling | Reimplemented in Swift; MIT notice included |
 | Azure AI Speech | Optional pronunciation assessment | Remote service |
 | Azure Translator | Optional translation | Remote service |
 | Gemini API | Optional coaching provider | Remote service |
 
 Users and redistributors are responsible for complying with each component's license, model license, service terms, and local law. Do not redistribute downloaded media or subtitles without permission.
+
+The py-fsrs MIT notice is included at [LICENSES/py-fsrs-MIT.txt](LICENSES/py-fsrs-MIT.txt).

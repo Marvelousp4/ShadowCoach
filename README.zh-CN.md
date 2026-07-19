@@ -15,6 +15,7 @@ Shadow Coach 是一个本地优先的 macOS 英语跟读与复述训练工具。
 3. 凭记忆复述并录音。
 4. 需要时点击 Analyze。
 5. 根据漏词、错词、音素和节奏证据，集中修正最重要的 1–3 个问题。
+6. 之后由 FSRS-6 在合适时间安排复习，默认根据英文语境回忆并大声说出原句。
 
 ## 主要功能
 
@@ -29,7 +30,10 @@ Shadow Coach 是一个本地优先的 macOS 英语跟读与复述训练工具。
 - Praat/Parselmouth 对比语速、停顿、pitch、intensity 和重读证据。
 - 可选 Azure 词级/音素级发音评估。
 - 可选本地 Codex CLI 或 Gemini，把分析证据解释成练习建议。
+- 本地 FSRS-6 自适应复习；默认英文语境提示，中文只作为卡住时的辅助，并可设置记忆目标和每日上限。
 - 把部分 Mac 文件夹导出为 `.shadowcoachbundle`，导入 iPhone 练习。
+
+复习算法和四个评分按钮的含义见 [docs/review.md](docs/review.md)。
 
 ## 普通用户安装
 

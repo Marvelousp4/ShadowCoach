@@ -20,7 +20,7 @@ The LLM explains evidence; it must not invent the pronunciation score.
 
 ## Current Source Layout
 
-The macOS prototype currently lives in `Sources/ShadowCoach/main.swift`. This preserves a working product but creates a contribution bottleneck. Refactoring should be incremental and behavior-preserving.
+The macOS prototype currently lives mostly in `Sources/ShadowCoach/ShadowCoachApp.swift`, with isolated domain logic such as `ReviewScheduler.swift` extracted into testable files. Refactoring should stay incremental and behavior-preserving.
 
 Target modules:
 

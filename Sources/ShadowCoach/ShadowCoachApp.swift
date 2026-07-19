@@ -262,6 +262,22 @@ enum PracticeTextSizeOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum ReviewRetentionOption: Double, CaseIterable, Identifiable {
+    case relaxed = 0.85
+    case balanced = 0.90
+    case strong = 0.95
+
+    var id: Double { rawValue }
+
+    var label: String {
+        switch self {
+        case .relaxed: return "Light 85%"
+        case .balanced: return "Balanced 90%"
+        case .strong: return "Strong 95%"
+        }
+    }
+}
+
 enum AppSettingsSection: String, CaseIterable, Identifiable {
     case appearance
     case practice
@@ -355,6 +371,23 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     @Published var useAICoach = UserDefaults.standard.object(forKey: "UseAICoach") == nil ? false : UserDefaults.standard.bool(forKey: "UseAICoach") {
         didSet { UserDefaults.standard.set(useAICoach, forKey: "UseAICoach") }
     }
+    @Published var desiredReviewRetention: Double = {
+        let stored = UserDefaults.standard.double(forKey: "DesiredReviewRetention")
+        return ReviewRetentionOption(rawValue: stored)?.rawValue ?? ReviewRetentionOption.balanced.rawValue
+    }() {
+        didSet { UserDefaults.standard.set(desiredReviewRetention, forKey: "DesiredReviewRetention") }
+    }
+    @Published var dailyReviewLimit: Int = {
+        let stored = UserDefaults.standard.integer(forKey: "DailyReviewLimit")
+        return [10, 20, 30, 50].contains(stored) ? stored : 20
+    }() {
+        didSet { UserDefaults.standard.set(dailyReviewLimit, forKey: "DailyReviewLimit") }
+    }
+    @Published private(set) var isReviewSessionActive = false
+    @Published private(set) var isReviewAnswerRevealed = false
+    @Published private(set) var isReviewChineseHintVisible = false
+    @Published private(set) var reviewSessionPosition = 0
+    @Published private(set) var reviewSessionTotal = 0
     @Published var selectedAttemptRelativePathForAnalysis: String?
     @Published var phraseTranslation = ""
     @Published var isTranslatingPhrase = false
@@ -370,6 +403,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     private var wordLookupRequestID = UUID()
     private var coachConversationRequestID = UUID()
     private var analysisRunIDs: [String: UUID] = [:]
+    private var reviewSessionLineIDs: [UUID] = []
 
     private let synthesizer = NSSpeechSynthesizer()
     private var recorder: AVAudioRecorder?
@@ -466,6 +500,10 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func speakSentence() {
+        guard !isReviewSessionActive || isReviewAnswerRevealed else {
+            status = "Recall the line before listening to the answer."
+            return
+        }
         stopPlayback()
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking()
@@ -525,6 +563,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func chooseNext(in lines: [PracticeLine]) {
+        if isReviewSessionActive {
+            endReviewSession()
+        }
         guard !lines.isEmpty else { return }
         guard let index = lines.firstIndex(where: { $0.id == selectedLineID }) else {
             choose(lines[0])
@@ -538,6 +579,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func choosePrevious(in lines: [PracticeLine]) {
+        if isReviewSessionActive {
+            endReviewSession()
+        }
         guard !lines.isEmpty else { return }
         guard let index = lines.firstIndex(where: { $0.id == selectedLineID }) else {
             choose(lines[0])
@@ -579,7 +623,11 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         case .playback:
             playRecording()
         case .reveal:
-            isSentenceVisible.toggle()
+            if isReviewSessionActive {
+                revealReviewAnswer()
+            } else {
+                isSentenceVisible.toggle()
+            }
         case .favorite:
             toggleFavorite()
         case .previous:
@@ -610,9 +658,29 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         do {
             let data = try Data(contentsOf: practiceURL)
             practiceStore = try JSONDecoder().decode(PracticeStore.self, from: data)
+            if migrateLegacyReviewCards() {
+                savePracticeStore()
+            }
         } catch {
             status = "Could not load practice history: \(error.localizedDescription)"
         }
+    }
+
+    private func migrateLegacyReviewCards() -> Bool {
+        var changed = false
+        for lineID in Array(practiceStore.progress.keys) {
+            guard var progress = practiceStore.progress[lineID],
+                  progress.practiceCount > 0,
+                  progress.review == nil else {
+                continue
+            }
+            var card = FSRSReviewCard()
+            card.due = progress.lastPracticedAt ?? Date()
+            progress.review = SentenceReviewProgress(card: card)
+            practiceStore.progress[lineID] = progress
+            changed = true
+        }
+        return changed
     }
 
     func savePracticeStore() {
@@ -1032,6 +1100,173 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         return streak
     }
 
+    var reviewSessionProgressText: String {
+        guard isReviewSessionActive, reviewSessionTotal > 0 else { return "" }
+        return "Review \(reviewSessionPosition + 1) of \(reviewSessionTotal)"
+    }
+
+    func isReviewDue(for line: PracticeLine, at date: Date = Date()) -> Bool {
+        guard let review = practiceStore.progress[line.id]?.review else { return false }
+        return review.card.due <= date
+    }
+
+    func totalDueReviewCount(in lines: [PracticeLine], at date: Date = Date()) -> Int {
+        lines.reduce(into: 0) { count, line in
+            if isReviewDue(for: line, at: date) {
+                count += 1
+            }
+        }
+    }
+
+    func availableReviewCount(in lines: [PracticeLine], at date: Date = Date()) -> Int {
+        reviewQueue(in: lines, at: date).count
+    }
+
+    func startReviewSession(in lines: [PracticeLine], at date: Date = Date()) {
+        let queue = reviewQueue(in: lines, at: date)
+        guard let firstLine = queue.first else {
+            if totalDueReviewCount(in: lines, at: date) > 0 {
+                status = "Daily review goal complete"
+            } else {
+                status = "Review queue is clear"
+            }
+            return
+        }
+
+        reviewSessionLineIDs = queue.map(\.id)
+        reviewSessionPosition = 0
+        reviewSessionTotal = queue.count
+        choose(firstLine)
+        isReviewSessionActive = true
+        prepareReviewPrompt()
+        status = "\(reviewSessionProgressText). Recall it before revealing the answer."
+    }
+
+    func endReviewSession() {
+        guard isReviewSessionActive else { return }
+        isReviewSessionActive = false
+        isReviewAnswerRevealed = false
+        isReviewChineseHintVisible = false
+        reviewSessionLineIDs = []
+        reviewSessionPosition = 0
+        reviewSessionTotal = 0
+        isSentenceVisible = false
+        sentenceTranslation = ""
+        status = "Review paused"
+    }
+
+    func revealReviewAnswer() {
+        guard isReviewSessionActive else {
+            isSentenceVisible.toggle()
+            return
+        }
+        isReviewAnswerRevealed = true
+        isSentenceVisible = true
+        status = "Compare your recall, then rate how it felt."
+    }
+
+    func showReviewChineseHint() {
+        guard isReviewSessionActive, !isReviewAnswerRevealed else { return }
+        isReviewChineseHintVisible = true
+        translateCurrentSentence()
+    }
+
+    func rateCurrentReview(
+        _ rating: ReviewRating,
+        in lines: [PracticeLine],
+        at date: Date = Date()
+    ) {
+        guard isReviewSessionActive, isReviewAnswerRevealed, let selectedLineID else { return }
+
+        var progress = practiceStore.progress[selectedLineID] ?? PracticeProgress()
+        var review = progress.review ?? SentenceReviewProgress()
+        let scheduler = FSRS6Scheduler(desiredRetention: desiredReviewRetention)
+        let result = scheduler.schedule(card: review.card, rating: rating, at: date)
+        review.card = result.card
+        review.history.append(result.event)
+        if review.history.count > 1_000 {
+            review.history.removeFirst(review.history.count - 1_000)
+        }
+        progress.review = review
+        practiceStore.progress[selectedLineID] = progress
+        savePracticeStore()
+
+        let completed = reviewSessionPosition + 1
+        var nextPosition = completed
+        while nextPosition < reviewSessionLineIDs.count {
+            let nextID = reviewSessionLineIDs[nextPosition]
+            if let nextLine = lines.first(where: { $0.id == nextID }) {
+                reviewSessionPosition = nextPosition
+                choose(nextLine)
+                isReviewSessionActive = true
+                prepareReviewPrompt()
+                status = "\(reviewSessionProgressText). Recall it before revealing the answer."
+                return
+            }
+            nextPosition += 1
+        }
+
+        let total = reviewSessionTotal
+        isReviewSessionActive = false
+        isReviewAnswerRevealed = false
+        isReviewChineseHintVisible = false
+        reviewSessionLineIDs = []
+        reviewSessionPosition = 0
+        reviewSessionTotal = 0
+        isSentenceVisible = false
+        sentenceTranslation = ""
+        status = "Review complete: \(total) line\(total == 1 ? "" : "s")"
+    }
+
+    func reviewIntervalDescription(for rating: ReviewRating, at date: Date = Date()) -> String {
+        let card = currentProgress().review?.card ?? FSRSReviewCard()
+        let result = FSRS6Scheduler(desiredRetention: desiredReviewRetention)
+            .schedule(card: card, rating: rating, at: date)
+        return compactInterval(result.event.scheduledInterval)
+    }
+
+    private func prepareReviewPrompt() {
+        isReviewAnswerRevealed = false
+        isReviewChineseHintVisible = false
+        isSentenceVisible = false
+        sentenceTranslation = ""
+        sentenceTranslationRequestID = UUID()
+    }
+
+    private func reviewQueue(in lines: [PracticeLine], at date: Date) -> [PracticeLine] {
+        let remainingLimit = max(0, dailyReviewLimit - reviewsCompleted(on: date))
+        guard remainingLimit > 0 else { return [] }
+        let lineOrder = Dictionary(uniqueKeysWithValues: lines.enumerated().map { ($0.element.id, $0.offset) })
+        return lines
+            .filter { isReviewDue(for: $0, at: date) }
+            .sorted { lhs, rhs in
+                let lhsDue = practiceStore.progress[lhs.id]?.review?.card.due ?? .distantPast
+                let rhsDue = practiceStore.progress[rhs.id]?.review?.card.due ?? .distantPast
+                if lhsDue != rhsDue { return lhsDue < rhsDue }
+                return (lineOrder[lhs.id] ?? 0) < (lineOrder[rhs.id] ?? 0)
+            }
+            .prefix(remainingLimit)
+            .map { $0 }
+    }
+
+    private func reviewsCompleted(on date: Date, calendar: Calendar = .current) -> Int {
+        practiceStore.progress.values.reduce(into: 0) { total, progress in
+            total += progress.review?.history.filter {
+                calendar.isDate($0.reviewedAt, inSameDayAs: date)
+            }.count ?? 0
+        }
+    }
+
+    private func compactInterval(_ interval: TimeInterval) -> String {
+        if interval < 3_600 {
+            return "\(max(1, Int((interval / 60).rounded())))m"
+        }
+        if interval < 86_400 {
+            return "\(max(1, Int((interval / 3_600).rounded())))h"
+        }
+        return "\(max(1, Int((interval / 86_400).rounded())))d"
+    }
+
     func playAttempt(_ attempt: RecordingAttempt) {
         let url = appSupportDirectory.appendingPathComponent(attempt.relativePath)
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -1137,6 +1372,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             progress.practiceCount += 1
             progress.lastPracticedAt = Date()
             progress.attempts.insert(attempt, at: 0)
+            if progress.review == nil {
+                progress.review = SentenceReviewProgress()
+            }
             selectedAttemptRelativePathForAnalysis = relativePath
             if progress.attempts.count > 20 {
                 let expiredAttempts = progress.attempts.dropFirst(20)
@@ -2766,6 +3004,7 @@ struct PracticeProgress: Codable {
     var practiceCount = 0
     var lastPracticedAt: Date?
     var attempts: [RecordingAttempt] = []
+    var review: SentenceReviewProgress? = nil
 }
 
 struct RecordingAttempt: Identifiable, Codable, Hashable {
@@ -6413,6 +6652,22 @@ struct ContentView: View {
             }
 
             Button {
+                if coach.isReviewSessionActive {
+                    coach.endReviewSession()
+                } else {
+                    coach.startReviewSession(in: allLines)
+                }
+            } label: {
+                let count = coach.availableReviewCount(in: allLines)
+                Label(
+                    coach.isReviewSessionActive ? "End Review" : (count > 0 ? "Review \(count)" : "Review"),
+                    systemImage: coach.isReviewSessionActive ? "xmark" : "brain.head.profile"
+                )
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .help(reviewButtonHelp)
+
+            Button {
                 settingsSection = .appearance
                 showingAppSettings = true
             } label: {
@@ -6761,10 +7016,8 @@ struct ContentView: View {
         case .done:
             return coach.progress(for: line).practiceCount > 0
         case .needsReview:
-            guard let score = coach.progress(for: line).attempts.first?.analysisCache?.localAnalysis.accuracy else {
-                return false
-            }
-            return score < 85
+            if coach.isReviewDue(for: line) { return true }
+            return coach.progress(for: line).attempts.first?.analysisCache?.localAnalysis.accuracy ?? 100 < 85
         case .new:
             return coach.progress(for: line).practiceCount == 0
         case .realAudio:
@@ -6794,6 +7047,9 @@ struct ContentView: View {
         let quality = qualityForLine(line)
 
         return Button {
+            if coach.isReviewSessionActive {
+                coach.endReviewSession()
+            }
             coach.choose(line)
             expandedSources.insert(line.source)
         } label: {
@@ -6828,6 +7084,12 @@ struct ContentView: View {
                         Image(systemName: "star.fill")
                             .font(.caption)
                             .foregroundStyle(.yellow)
+                    }
+                    if coach.isReviewDue(for: line) {
+                        Image(systemName: "clock.fill")
+                            .font(.caption)
+                            .foregroundStyle(Theme.warning)
+                            .help("Ready to review")
                     }
                     if progress.practiceCount > 0 {
                         Text("\(progress.practiceCount)x")
@@ -6955,13 +7217,32 @@ struct ContentView: View {
         .background(Theme.panel)
     }
 
+    private var reviewButtonHelp: String {
+        if coach.isReviewSessionActive { return "Pause this review session" }
+        let total = coach.totalDueReviewCount(in: allLines)
+        let available = coach.availableReviewCount(in: allLines)
+        if total == 0 { return "No sentences are due" }
+        if available == 0 { return "Today's review goal is complete" }
+        if available < total { return "Start \(available) of \(total) due sentences" }
+        return "Start \(available) due sentence\(available == 1 ? "" : "s")"
+    }
+
+    private var previousReviewLine: PracticeLine? {
+        guard let selectedLine = coach.selectedLine else { return nil }
+        let sourceLines = allLines.filter { $0.source == selectedLine.source }
+        guard let index = sourceLines.firstIndex(where: { $0.id == selectedLine.id }), index > 0 else {
+            return nil
+        }
+        return sourceLines[index - 1]
+    }
+
     private var practicePanel: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Practice")
+                    Text(coach.isReviewSessionActive ? "Review" : "Practice")
                         .font(.system(size: 28, weight: .semibold, design: .rounded))
-                    Text("Listen. Repeat. Review.")
+                    Text(coach.isReviewSessionActive ? coach.reviewSessionProgressText : "Listen. Repeat. Review.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -6977,25 +7258,31 @@ struct ContentView: View {
                 .disabled(coach.selectedLineID == nil)
                 .help("Favorite current sentence")
 
-                Button {
-                    coach.isSentenceVisible = true
-                    coach.translateCurrentSentence()
-                } label: {
-                    Label(coach.isTranslatingSentence ? "Translating" : "Translate", systemImage: "character.book.closed")
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                .disabled(coach.isTranslatingSentence)
-                .help("Translate the whole sentence")
+                if !coach.isReviewSessionActive {
+                    Button {
+                        coach.isSentenceVisible = true
+                        coach.translateCurrentSentence()
+                    } label: {
+                        Label(coach.isTranslatingSentence ? "Translating" : "Translate", systemImage: "character.book.closed")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(coach.isTranslatingSentence)
+                    .help("Translate the whole sentence")
 
-                Button {
-                    coach.isSentenceVisible.toggle()
-                } label: {
-                    Label(coach.isSentenceVisible ? "Hide Text" : "Reveal Text", systemImage: coach.isSentenceVisible ? "eye.slash.fill" : "eye.fill")
+                    Button {
+                        coach.isSentenceVisible.toggle()
+                    } label: {
+                        Label(coach.isSentenceVisible ? "Hide Text" : "Reveal Text", systemImage: coach.isSentenceVisible ? "eye.slash.fill" : "eye.fill")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
                 }
-                .buttonStyle(SecondaryButtonStyle())
             }
 
             sentenceStage
+
+            if coach.isReviewSessionActive && coach.isReviewAnswerRevealed {
+                reviewRatingBar
+            }
 
             actionDock
 
@@ -7010,7 +7297,9 @@ struct ContentView: View {
 
     private var sentenceStage: some View {
         Group {
-            if coach.isSentenceVisible {
+            if coach.isReviewSessionActive && !coach.isReviewAnswerRevealed {
+                reviewCueStage
+            } else if coach.isSentenceVisible {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         InteractiveSentenceView(text: coach.sentence, fontSize: practiceTextSize.pointSize)
@@ -7099,6 +7388,139 @@ struct ContentView: View {
         )
     }
 
+    private var reviewCueStage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.title2)
+                        .foregroundStyle(Theme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Recall from context")
+                            .font(.headline)
+                        Text(coach.selectedLine?.source ?? "Review")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Divider()
+
+                if let previousReviewLine {
+                    Label("Previous line", systemImage: "text.insert")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(previousReviewLine.text)
+                        .font(.system(size: 20, weight: .medium, design: .rounded))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Label("Opening line", systemImage: "text.badge.plus")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(coach.selectedLine?.title ?? "First sentence")
+                        .font(.system(size: 20, weight: .medium, design: .rounded))
+                }
+
+                if coach.isReviewChineseHintVisible {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Chinese rescue hint", systemImage: "character.book.closed")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.warning)
+                        Text(coach.sentenceTranslation.isEmpty ? "Translating..." : coach.sentenceTranslation)
+                            .font(.callout)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 430, alignment: .topLeading)
+        .background(subtleBackground)
+    }
+
+    private var reviewRatingBar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("How was recall?", systemImage: "checkmark.circle")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Text("Use Again when any part was forgotten")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(ReviewRating.allCases) { rating in
+                        reviewRatingButton(rating)
+                    }
+                }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(ReviewRating.allCases) { rating in
+                        reviewRatingButton(rating)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(subtleBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Theme.border)
+        )
+    }
+
+    private func reviewRatingButton(_ rating: ReviewRating) -> some View {
+        let color = reviewRatingColor(rating)
+        return Button {
+            coach.rateCurrentReview(rating, in: allLines)
+        } label: {
+            VStack(spacing: 3) {
+                HStack(spacing: 5) {
+                    Image(systemName: reviewRatingIcon(rating))
+                    Text(rating.label)
+                }
+                .font(.callout.weight(.semibold))
+                Text(coach.reviewIntervalDescription(for: rating))
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .padding(.horizontal, 8)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(color)
+        .background(color.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(color.opacity(0.3))
+        )
+        .help(rating.recallDescription)
+    }
+
+    private func reviewRatingColor(_ rating: ReviewRating) -> Color {
+        switch rating {
+        case .again: return Theme.danger
+        case .hard: return Theme.warning
+        case .good: return Theme.primary
+        case .easy: return Theme.success
+        }
+    }
+
+    private func reviewRatingIcon(_ rating: ReviewRating) -> String {
+        switch rating {
+        case .again: return "arrow.counterclockwise"
+        case .hard: return "exclamationmark"
+        case .good: return "checkmark"
+        case .easy: return "bolt.fill"
+        }
+    }
+
     private var actionDock: some View {
         GeometryReader { proxy in
             actionRow(compact: proxy.size.width < 520)
@@ -7108,16 +7530,36 @@ struct ContentView: View {
 
     private func actionRow(compact: Bool) -> some View {
         HStack(spacing: compact ? 8 : 10) {
-            actionButton(icon: "speaker.wave.2.fill", title: "Listen", shortcut: "↑", color: Theme.primary, compact: compact) {
-                coach.speakSentence()
-            }
-
-            actionButton(icon: coach.isRecording ? "stop.fill" : "mic.fill", title: coach.isRecording ? "Stop" : "Record", shortcut: "Space", color: coach.isRecording ? Theme.danger : Theme.success, compact: compact) {
-                coach.toggleRecording()
-            }
-
-            actionButton(icon: "chevron.right", title: "Next", shortcut: "→", color: .gray, compact: compact) {
-                coach.chooseNext(in: currentGroupLines)
+            if coach.isReviewSessionActive && !coach.isReviewAnswerRevealed {
+                actionButton(icon: "character.book.closed", title: "Hint", shortcut: "", color: Theme.warning, compact: compact) {
+                    coach.showReviewChineseHint()
+                }
+                actionButton(icon: coach.isRecording ? "stop.fill" : "mic.fill", title: coach.isRecording ? "Stop" : "Record", shortcut: "Space", color: coach.isRecording ? Theme.danger : Theme.success, compact: compact) {
+                    coach.toggleRecording()
+                }
+                actionButton(icon: "eye.fill", title: "Reveal", shortcut: "H", color: Theme.primary, compact: compact) {
+                    coach.revealReviewAnswer()
+                }
+            } else if coach.isReviewSessionActive {
+                actionButton(icon: "speaker.wave.2.fill", title: "Listen", shortcut: "↑", color: Theme.primary, compact: compact) {
+                    coach.speakSentence()
+                }
+                actionButton(icon: coach.isRecording ? "stop.fill" : "mic.fill", title: coach.isRecording ? "Stop" : "Record", shortcut: "Space", color: coach.isRecording ? Theme.danger : Theme.success, compact: compact) {
+                    coach.toggleRecording()
+                }
+                actionButton(icon: "play.fill", title: "Playback", shortcut: "P", color: .gray, compact: compact) {
+                    coach.playRecording()
+                }
+            } else {
+                actionButton(icon: "speaker.wave.2.fill", title: "Listen", shortcut: "↑", color: Theme.primary, compact: compact) {
+                    coach.speakSentence()
+                }
+                actionButton(icon: coach.isRecording ? "stop.fill" : "mic.fill", title: coach.isRecording ? "Stop" : "Record", shortcut: "Space", color: coach.isRecording ? Theme.danger : Theme.success, compact: compact) {
+                    coach.toggleRecording()
+                }
+                actionButton(icon: "chevron.right", title: "Next", shortcut: "→", color: .gray, compact: compact) {
+                    coach.chooseNext(in: currentGroupLines)
+                }
             }
         }
     }
@@ -7139,7 +7581,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(minWidth: compact ? 46 : 76, minHeight: compact ? 46 : 64)
             .overlay(alignment: .topTrailing) {
-                if !compact {
+                if !compact && !shortcut.isEmpty {
                     Text(shortcut)
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(color == .gray ? Color.secondary : Color.white.opacity(0.88))
@@ -7149,7 +7591,7 @@ struct ContentView: View {
             }
         }
         .buttonStyle(ActionTileButtonStyle(color: color))
-        .help("\(title) (\(shortcut))")
+        .help(shortcut.isEmpty ? title : "\(title) (\(shortcut))")
     }
 
     private var playbackControls: some View {
@@ -7833,6 +8275,37 @@ struct ContentView: View {
                 Toggle("Require full recording", isOn: $coach.requireFullReferenceLength)
                     .labelsHidden()
                     .toggleStyle(.switch)
+            }
+            settingsDivider
+
+            settingsRow("Review scheduler", icon: "brain.head.profile") {
+                Label("Adaptive FSRS-6", systemImage: "checkmark.circle.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Theme.success)
+            }
+            settingsDivider
+
+            settingsRow("Memory target", icon: "target") {
+                Picker("Memory target", selection: $coach.desiredReviewRetention) {
+                    ForEach(ReviewRetentionOption.allCases) { option in
+                        Text(option.label).tag(option.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 300)
+            }
+            settingsDivider
+
+            settingsRow("Daily review cap", icon: "calendar.badge.clock") {
+                Picker("Daily review cap", selection: $coach.dailyReviewLimit) {
+                    ForEach([10, 20, 30, 50], id: \.self) { limit in
+                        Text("\(limit)").tag(limit)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 260)
             }
         }
     }

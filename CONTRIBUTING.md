@@ -46,5 +46,5 @@ Use the bug template. Include macOS/iOS version, app revision, exact steps, expe
 - Parser fixtures and regression tests.
 - Accessibility labels and VoiceOver fixes.
 - Documentation and setup diagnostics.
-- Small extractions from `main.swift` that do not change behavior.
+- Small extractions from `ShadowCoachApp.swift` that do not change behavior.
 - Clearer actionable errors for missing optional tools.

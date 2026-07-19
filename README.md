@@ -25,6 +25,7 @@ Shadow Coach is a local-first macOS and iPhone practice app. Listen without seei
 3. Repeat and record from memory.
 4. Analyze when you are ready.
 5. Fix the most important word, sound, or rhythm issue and try again.
+6. Recall practiced lines later from English context with the adaptive review queue.
 
 ## Features
 
@@ -47,7 +48,10 @@ Shadow Coach is a local-first macOS and iPhone practice app. Listen without seei
 - Praat/Parselmouth speaking rate, pauses, pitch, intensity, and emphasis evidence.
 - Optional Azure Pronunciation Assessment for word and phoneme scores.
 - Optional local Codex CLI or Gemini coaching, cached by recording and provider.
+- Local FSRS-6 spaced review with English-context prompts, an optional Chinese rescue hint, and two simple workload settings.
 - Daily practice history and progress statistics.
+
+Review design and rating semantics are documented in [docs/review.md](docs/review.md).
 
 ## Install
 

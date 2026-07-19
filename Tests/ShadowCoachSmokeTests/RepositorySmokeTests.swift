@@ -160,7 +160,7 @@ final class RepositorySmokeTests: XCTestCase {
 
     func testCoachPromptUsesAdaptiveOutputGuidance() throws {
         let source = try String(
-            contentsOf: repositoryRoot().appendingPathComponent("Sources/ShadowCoach/main.swift"),
+            contentsOf: repositoryRoot().appendingPathComponent("Sources/ShadowCoach/ShadowCoachApp.swift"),
             encoding: .utf8
         )
 
@@ -265,6 +265,74 @@ final class RepositorySmokeTests: XCTestCase {
         )
 
         XCTAssertEqual(hints, ["on-site", "onsite", "checkpoint", "checkpoints"])
+    }
+
+    func testFSRS6UsesOfficialShortLearningSteps() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let scheduler = FSRS6Scheduler(desiredRetention: 0.9)
+
+        let first = scheduler.schedule(card: FSRSReviewCard(), rating: .good, at: now)
+        XCTAssertEqual(first.card.state, .learning)
+        XCTAssertEqual(first.card.step, 1)
+        XCTAssertEqual(first.card.stability ?? -1, FSRS6Scheduler.defaultParameters[2], accuracy: 0.000_001)
+        XCTAssertEqual(first.event.scheduledInterval, 10 * 60, accuracy: 0.001)
+
+        let second = scheduler.schedule(
+            card: first.card,
+            rating: .good,
+            at: now.addingTimeInterval(10 * 60)
+        )
+        XCTAssertEqual(second.card.state, .review)
+        XCTAssertNil(second.card.step)
+        XCTAssertEqual(second.event.scheduledInterval, 2 * 86_400, accuracy: 0.001)
+    }
+
+    func testFSRS6AgainUsesRelearningInsteadOfPretendingRecall() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        var card = FSRSReviewCard(
+            state: .review,
+            step: nil,
+            stability: 10,
+            difficulty: 5,
+            due: now,
+            lastReview: now.addingTimeInterval(-10 * 86_400),
+            reviewCount: 4,
+            lapseCount: 0
+        )
+        let result = FSRS6Scheduler().schedule(card: card, rating: .again, at: now)
+        card = result.card
+
+        XCTAssertEqual(card.state, .relearning)
+        XCTAssertEqual(card.step, 0)
+        XCTAssertEqual(card.lapseCount, 1)
+        XCTAssertEqual(result.event.scheduledInterval, 10 * 60, accuracy: 0.001)
+    }
+
+    func testHigherFSRSRetentionSchedulesEarlierReview() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let card = FSRSReviewCard(
+            state: .review,
+            step: nil,
+            stability: 20,
+            difficulty: 5,
+            due: now,
+            lastReview: now.addingTimeInterval(-20 * 86_400),
+            reviewCount: 8,
+            lapseCount: 0
+        )
+
+        let relaxed = FSRS6Scheduler(desiredRetention: 0.85).schedule(card: card, rating: .good, at: now)
+        let strong = FSRS6Scheduler(desiredRetention: 0.95).schedule(card: card, rating: .good, at: now)
+
+        XCTAssertLessThan(strong.event.scheduledInterval, relaxed.event.scheduledInterval)
+    }
+
+    func testLegacyPracticeProgressDecodesWithoutReviewState() throws {
+        let data = try XCTUnwrap(#"{"practiceCount":2,"attempts":[]}"#.data(using: .utf8))
+        let progress = try JSONDecoder().decode(PracticeProgress.self, from: data)
+
+        XCTAssertEqual(progress.practiceCount, 2)
+        XCTAssertNil(progress.review)
     }
 
     private func repositoryRoot() -> URL {
