@@ -238,6 +238,19 @@ struct LearningPathProgress: Codable, Hashable {
 }
 
 enum LearningPathEngine {
+    static func isApplicable(_ stage: LearningPathStage, progress: PracticeProgress) -> Bool {
+        guard [.transformation, .freeExpression, .realCommunication].contains(stage) else {
+            return true
+        }
+        guard let path = progress.learningPath,
+              path.noticingCompletedAt != nil else {
+            return true
+        }
+        let hasStructuredTarget = path.selectedTarget != nil
+        let hasLegacyTarget = !(path.selectedChunk?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        return hasStructuredTarget || hasLegacyTarget
+    }
+
     static func isComplete(_ stage: LearningPathStage, progress: PracticeProgress) -> Bool {
         if progress.learningPath?.completedAt(for: stage) != nil {
             return true
@@ -262,11 +275,15 @@ enum LearningPathEngine {
     }
 
     static func nextStage(for progress: PracticeProgress) -> LearningPathStage? {
-        LearningPathStage.allCases.first { !isComplete($0, progress: progress) }
+        LearningPathStage.allCases.first {
+            isApplicable($0, progress: progress) && !isComplete($0, progress: progress)
+        }
     }
 
     static func completedCount(for progress: PracticeProgress) -> Int {
-        LearningPathStage.allCases.filter { isComplete($0, progress: progress) }.count
+        LearningPathStage.allCases.filter {
+            !isApplicable($0, progress: progress) || isComplete($0, progress: progress)
+        }.count
     }
 
     static func recordingActivity(for stage: LearningPathStage?) -> PracticeActivity {

@@ -423,6 +423,13 @@ final class RepositorySmokeTests: XCTestCase {
         progress.learningPath = path
         XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .noticing)
 
+        path.selectedTarget = LearningTarget(
+            text: "rule out",
+            kind: .phrasalVerb,
+            frame: "rule out [possible cause]",
+            note: "Useful for eliminating a possible cause."
+        )
+        path.selectedChunk = "rule out"
         path.mark(.noticing)
         progress.learningPath = path
         XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .shadowing)
@@ -480,6 +487,48 @@ final class RepositorySmokeTests: XCTestCase {
         progress.learningPath = path
         XCTAssertNil(LearningPathEngine.nextStage(for: progress))
         XCTAssertEqual(LearningPathEngine.completedCount(for: progress), 9)
+    }
+
+    func testLearningPathSkipsTransferStagesWithoutReusableTarget() {
+        var path = LearningPathProgress()
+        path.mark(.input)
+        path.mark(.noticing)
+        var progress = PracticeProgress(
+            attempts: [
+                RecordingAttempt(
+                    id: UUID(),
+                    date: Date(),
+                    duration: 5,
+                    relativePath: "Recordings/shadow.m4a",
+                    activity: .shadowing
+                )
+            ],
+            review: SentenceReviewProgress(history: [
+                ReviewEvent(
+                    reviewedAt: Date(),
+                    rating: .good,
+                    elapsedDays: 0,
+                    scheduledInterval: 600
+                )
+            ]),
+            learningPath: path
+        )
+
+        XCTAssertFalse(LearningPathEngine.isApplicable(.transformation, progress: progress))
+        XCTAssertFalse(LearningPathEngine.isApplicable(.freeExpression, progress: progress))
+        XCTAssertFalse(LearningPathEngine.isApplicable(.realCommunication, progress: progress))
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .feedbackCorrection)
+        XCTAssertEqual(LearningPathEngine.completedCount(for: progress), 8)
+
+        path.selectedTarget = LearningTarget(
+            text: "rule out",
+            kind: .phrasalVerb,
+            frame: "rule out [possible cause]",
+            note: "Useful for eliminating a possible cause."
+        )
+        progress.learningPath = path
+        XCTAssertTrue(LearningPathEngine.isApplicable(.transformation, progress: progress))
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .transformation)
     }
 
     func testLearningTargetExtractorFindsReusableExpression() {

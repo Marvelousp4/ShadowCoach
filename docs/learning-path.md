@@ -11,9 +11,9 @@ The **Next Coach** card turns each sentence into one small next action instead o
 | Shadow | Copy the reference and record it | Saved Shadowing recording |
 | Recall | Produce the hidden line from English context | A completed recall rating |
 | Review | Let FSRS schedule the next retrieval | The same rating creates an FSRS event and due date |
-| Transform | Keep the learning target but genuinely change the people, time, and details | Saved New Situation recording |
-| Free speak | Speak for 30–60 seconds from personal meaning | Saved Free Speaking recording |
-| Use it | Use the target in real communication and record the outcome | Learner outcome, optional actual wording, and optional stage feedback |
+| Transform | Keep the learning target but genuinely change the people, time, and details | Saved New Situation recording, or skipped when no reusable target exists |
+| Free speak | Speak for 30–60 seconds from personal meaning | Saved Free Speaking recording, or skipped when no reusable target exists |
+| Use it | Use the target in real communication and record the outcome | Learner outcome and optional wording, or skipped when no reusable target exists |
 | Correct | Analyze an exact attempt and retry | Perfect exact recall, or analysis of a Corrected Retry |
 
 Legacy recordings resolve to `Shadowing`. New open-response recordings have an explicit activity type. `New Situation` and `Free Speaking` attempts are playable and persistent, but exact reference comparison, Azure pronunciation scoring, prosody comparison, and the reference-length rejection rule do not run on them.
@@ -22,7 +22,7 @@ Legacy recordings resolve to `Shadowing`. New open-response recordings have an e
 
 The local extractor only returns high-confidence language patterns. It does not fall back to arbitrary n-grams, names, IDs, numbers, or topic-specific noun phrases. Local Codex can automatically refine the candidates when enabled; Gemini refinement remains an explicit action so the app does not create an unrequested paid call. AI candidates must still pass local validation and remain exact substrings of the source sentence. The selector prefers one strong formulaic sequence over three weak fragments because instruction is most useful when it draws attention to conventional combinations and then gives the learner repeated opportunities to retrieve them.
 
-Returning no target is a valid result. In that case, the learner practices the complete message instead of memorizing a weak fragment.
+Returning no target is a valid result. In that case, the learner still listens, shadows, recalls, reviews, and corrects the complete message. The app skips `Transform`, `Free speak`, and `Use it` because asking the learner to transfer an arbitrary whole sentence would create busywork rather than useful language practice.
 
 ## Evidence-Informed Responsibilities
 

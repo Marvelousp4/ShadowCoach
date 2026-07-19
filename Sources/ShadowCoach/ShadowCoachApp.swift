@@ -1122,6 +1122,10 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         LearningPathEngine.isComplete(stage, progress: currentProgress())
     }
 
+    func isCurrentLearningStageSkipped(_ stage: LearningPathStage) -> Bool {
+        !LearningPathEngine.isApplicable(stage, progress: currentProgress())
+    }
+
     var currentLearningCompletedCount: Int {
         LearningPathEngine.completedCount(for: currentProgress())
     }
@@ -1180,7 +1184,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         }
         activeRecordingActivity = .shadowing
         status = target == nil
-            ? "No standalone learning target saved. Practice this line as a complete message."
+            ? "No reusable target saved. Transfer stages will be skipped for this sentence."
             : "Learning target saved. Listen again and copy the speaker's delivery."
     }
 
@@ -7175,6 +7179,7 @@ struct ContentView: View {
     @State private var showingAppSettings = false
     @State private var settingsSection: AppSettingsSection = .appearance
     @State private var showingPracticeStats = false
+    @State private var showingRecordingHistory = false
     @State private var showingAllAttempts = false
     @State private var hoveredAttemptID: UUID?
     @State private var sourceVisibleLimits: [String: Int] = [:]
@@ -7258,6 +7263,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingAppSettings) {
             appSettingsSheet
+        }
+        .sheet(isPresented: $showingRecordingHistory) {
+            recordingHistorySheet
         }
         .alert(item: $pendingLibraryDeletion) { target in
             Alert(
@@ -7777,19 +7785,22 @@ struct ContentView: View {
             }
             .padding(.horizontal, 12)
 
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    if visibleSections.isEmpty {
-                        emptyLibraryFilterState
-                    } else {
-                        ForEach(visibleSections) { section in
-                            sectionView(section)
-                        }
+            List {
+                if visibleSections.isEmpty {
+                    emptyLibraryFilterState
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(visibleSections) { section in
+                        sectionView(section)
+                            .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 16)
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
         .frame(width: 300)
     }
@@ -7971,10 +7982,6 @@ struct ContentView: View {
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(isSelected ? Theme.primary : .primary)
                         .lineLimit(1)
-                    Text(line.text)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
                     HStack(spacing: 6) {
                         tagPill(label: quality.label, systemImage: quality.systemImage)
                         if line.hasSourceAudio {
@@ -8161,6 +8168,26 @@ struct ContentView: View {
 
                 Spacer()
 
+                if !coach.currentProgress().attempts.isEmpty {
+                    Button {
+                        showingRecordingHistory = true
+                    } label: {
+                        Image(systemName: "waveform.path")
+                            .overlay(alignment: .topTrailing) {
+                                Text("\(coach.currentProgress().attempts.count)")
+                                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 3)
+                                    .frame(minWidth: 14, minHeight: 14)
+                                    .background(Theme.accent)
+                                    .clipShape(Capsule())
+                                    .offset(x: 8, y: -7)
+                            }
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .help("Show saved recordings")
+                }
+
                 Button {
                     coach.toggleFavorite()
                 } label: {
@@ -8286,6 +8313,7 @@ struct ContentView: View {
         HStack(spacing: 6) {
             ForEach(Array(LearningPathStage.allCases.enumerated()), id: \.element.id) { index, stage in
                 let isComplete = coach.isCurrentLearningStageComplete(stage)
+                let isSkipped = coach.isCurrentLearningStageSkipped(stage)
                 let isActive = activeStage == stage
                 ZStack {
                     RoundedRectangle(cornerRadius: 5)
@@ -8294,9 +8322,13 @@ struct ContentView: View {
                                 ? Theme.success.opacity(0.16)
                                 : (isActive ? Theme.accent.opacity(0.16) : Theme.pill)
                         )
-                    Image(systemName: isComplete ? "checkmark" : stage.systemImage)
+                    Image(systemName: isSkipped ? "minus" : (isComplete ? "checkmark" : stage.systemImage))
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(isComplete ? Theme.success : (isActive ? Theme.accent : Color.secondary))
+                        .foregroundStyle(
+                            isSkipped
+                                ? Color.secondary
+                                : (isComplete ? Theme.success : (isActive ? Theme.accent : Color.secondary))
+                        )
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 24)
@@ -8304,7 +8336,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 5)
                         .stroke(isActive ? Theme.accent.opacity(0.45) : Color.clear)
                 )
-                .help("\(index + 1). \(stage.title)")
+                .help(isSkipped ? "\(index + 1). \(stage.title) · skipped without a reusable target" : "\(index + 1). \(stage.title)")
             }
         }
     }
@@ -8557,6 +8589,7 @@ struct ContentView: View {
 
     private func learningActionDisabled(for stage: LearningPathStage) -> Bool {
         if coach.selectedLineID == nil { return true }
+        if stage == .noticing && coach.isFindingLearningTargets { return true }
         if stage == .feedbackCorrection || stage == .realCommunication { return coach.isAnalyzing }
         return false
     }
@@ -9010,6 +9043,54 @@ struct ContentView: View {
             .labelsHidden()
             .frame(maxWidth: 180)
         }
+    }
+
+    private var recordingHistorySheet: some View {
+        let attempts = coach.currentProgress().attempts
+
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Theme.primary.opacity(0.12))
+                        .frame(width: 38, height: 38)
+                    Image(systemName: "waveform.path")
+                        .foregroundStyle(Theme.primary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recordings")
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    Text("\(coach.selectedLine?.title ?? "Current sentence") · \(attempts.count) saved")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    showingRecordingHistory = false
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(IconButtonStyle())
+                .help("Close recording history")
+            }
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 7) {
+                    ForEach(attempts) { attempt in
+                        savedAttemptRow(attempt)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 420, idealHeight: 560)
+        .background(Theme.appBackground)
     }
 
     private var recordingPanel: some View {
