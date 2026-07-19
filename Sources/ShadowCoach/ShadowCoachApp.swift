@@ -2218,6 +2218,7 @@ struct GeminiResponse: Decodable {
 
 enum CodexWorkload: String, CaseIterable {
     case learningTargetSelection
+    case learningTargetRecovery
     case practiceGeneration
     case transformationFeedback
     case freeSpeakingFeedback
@@ -2232,7 +2233,8 @@ enum CodexWorkload: String, CaseIterable {
         case .learningTargetSelection, .practiceGeneration, .transformationFeedback,
              .realUseFeedback, .transformationFollowUp:
             return .fast
-        case .freeSpeakingFeedback, .exactCoaching, .exactFollowUp, .freeSpeakingFollowUp:
+        case .learningTargetRecovery, .freeSpeakingFeedback, .exactCoaching,
+             .exactFollowUp, .freeSpeakingFollowUp:
             return .nuanced
         }
     }

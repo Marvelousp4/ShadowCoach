@@ -97,6 +97,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     private var phraseTranslationRequestID = UUID()
     private var sentenceTranslationRequestID = UUID()
     private var wordLookupRequestID = UUID()
+    private var learningTargetRequestID = UUID()
     var coachConversationRequestID = UUID()
     var analysisRunIDs: [String: UUID] = [:]
     private var reviewSessionLineIDs: [UUID] = []
@@ -260,6 +261,8 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         // Archive an active recording against the sentence it belongs to before
         // changing selection. The archived file also lets analysis continue safely.
         clearRecording()
+        learningTargetRequestID = UUID()
+        isFindingLearningTargets = false
         selectedLineID = line.id
         selectedLine = line
         rememberLastSelectedLine(line.id)
@@ -914,7 +917,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     func findBetterLearningTargets() {
-        guard !isFindingLearningTargets, let selectedLineID else { return }
+        guard let selectedLineID else { return }
         let provider = feedbackProvider
         let apiKeySnapshot = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if provider == .gemini, apiKeySnapshot.isEmpty {
@@ -926,6 +929,8 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         let sourceSnapshot = selectedLine.map { "\($0.source) · \($0.title)" } ?? "Unknown source"
         let contextSnapshot = neighboringContext(for: selectedLine)
         let localTargets = LearningTargetExtractor.extract(from: sentenceSnapshot)
+        let requestID = UUID()
+        learningTargetRequestID = requestID
         isFindingLearningTargets = true
         status = "Finding genuinely reusable language..."
 
@@ -937,32 +942,42 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                     contextBefore: contextSnapshot.before,
                     contextAfter: contextSnapshot.after
                 )
-                let raw: String
+                var aiTargets: [LearningTarget]
+                var model: String
                 switch provider {
                 case .codex:
-                    raw = try await CodexFeedbackClient.run(
+                    let firstPass = try await CodexFeedbackClient.run(
                         prompt: prompt,
                         workload: .learningTargetSelection
                     )
+                    aiTargets = try LearningTargetAIParser.parse(firstPass, sentence: sentenceSnapshot)
+                    model = CodexFeedbackClient.route(for: .learningTargetSelection).model
+
+                    if aiTargets.isEmpty, localTargets.isEmpty {
+                        let secondPass = try await CodexFeedbackClient.run(
+                            prompt: prompt,
+                            workload: .learningTargetRecovery
+                        )
+                        aiTargets = try LearningTargetAIParser.parse(secondPass, sentence: sentenceSnapshot)
+                        model = CodexFeedbackClient.route(for: .learningTargetRecovery).model
+                    }
                 case .gemini:
-                    raw = try await self.requestGeminiText(
+                    let raw = try await self.requestGeminiText(
                         prompt: prompt,
                         apiKey: apiKeySnapshot,
                         maxOutputTokens: 700
                     )
+                    aiTargets = try LearningTargetAIParser.parse(raw, sentence: sentenceSnapshot)
+                    model = self.geminiModel
                 }
-                let aiTargets = try LearningTargetAIParser.parse(raw, sentence: sentenceSnapshot)
                 let targets = LearningTargetExtractor.merge(primary: aiTargets, fallback: localTargets)
+                let selectedModel = model
                 await MainActor.run {
-                    guard self.selectedLineID == selectedLineID else {
-                        self.isFindingLearningTargets = false
-                        return
-                    }
+                    guard self.learningTargetRequestID == requestID,
+                          self.selectedLineID == selectedLineID else { return }
                     self.updateCurrentLearningPath { path in
                         path.suggestedTargets = targets
-                        path.targetSuggestionModel = provider == .codex
-                            ? CodexFeedbackClient.route(for: .learningTargetSelection).model
-                            : self.geminiModel
+                        path.targetSuggestionModel = selectedModel
                         path.targetSuggestionRevision = LearningTargetExtractor.selectionRevision
                         if let selected = path.selectedTarget,
                            !targets.contains(where: { $0.id == selected.id }) {
@@ -977,6 +992,8 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 }
             } catch {
                 await MainActor.run {
+                    guard self.learningTargetRequestID == requestID,
+                          self.selectedLineID == selectedLineID else { return }
                     self.isFindingLearningTargets = false
                     self.status = "Could not find learning targets: \(error.localizedDescription)"
                 }

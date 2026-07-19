@@ -723,11 +723,14 @@ final class RepositorySmokeTests: XCTestCase {
     func testCodexRouterKeepsNuancedJudgmentOnBalancedModel() {
         let available: Set<String> = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 
+        let recovery = CodexModelRouter.route(for: .learningTargetRecovery, availableModels: available)
         let exact = CodexModelRouter.route(for: .exactCoaching, availableModels: available)
         let freeSpeaking = CodexModelRouter.route(for: .freeSpeakingFeedback, availableModels: available)
 
+        XCTAssertEqual(recovery.model, "gpt-5.6-terra")
         XCTAssertEqual(exact.model, "gpt-5.6-terra")
         XCTAssertEqual(freeSpeaking.model, "gpt-5.6-terra")
+        XCTAssertEqual(recovery.tier, .nuanced)
         XCTAssertEqual(exact.tier, .nuanced)
     }
 

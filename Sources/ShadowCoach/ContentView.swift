@@ -1450,9 +1450,9 @@ struct ContentView: View {
             return "Checking this sentence..."
         }
         if coach.feedbackProvider == .gemini {
-            return hasTargets ? "Ask Gemini for alternatives" : "Try Gemini"
+            return hasTargets ? "Refresh suggestions" : "Find with Gemini"
         }
-        return hasTargets ? "Find another option" : "Check again"
+        return hasTargets ? "Refresh suggestions" : "Find with Codex"
     }
 
     private func learningTargetRow(_ target: LearningTarget) -> some View {
