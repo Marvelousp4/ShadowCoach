@@ -285,12 +285,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         }
         activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
         status = "Sentence loaded. Listen first, then repeat from memory."
-        if useAICoach,
-           feedbackProvider == .codex,
-           currentLearningStage() == .noticing,
-           needsLearningTargetRefresh() {
-            findBetterLearningTargets()
-        }
+        findLearningTargetsIfNeeded()
     }
 
     func restoreLastSelectedLine(from lines: [PracticeLine]) {
@@ -772,6 +767,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 status = "\(savedActivity.label) recording saved"
             }
             activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
+            findLearningTargetsIfNeeded()
         } else {
             try? FileManager.default.removeItem(at: recordingURL)
             status = "Recording too short. Try again."
@@ -884,16 +880,22 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         markCurrentLearningStage(.input)
         isSentenceVisible = true
         status = "Meaning confirmed. Now notice one reusable expression."
-        if useAICoach,
-           feedbackProvider == .codex,
-           needsLearningTargetRefresh() {
-            findBetterLearningTargets()
-        }
+        findLearningTargetsIfNeeded()
     }
 
     private func needsLearningTargetRefresh() -> Bool {
         currentProgress().learningPath?.targetSuggestionRevision
             != LearningTargetExtractor.selectionRevision
+    }
+
+    func findLearningTargetsIfNeeded() {
+        guard useAICoach,
+              feedbackProvider == .codex,
+              currentLearningStage() == .noticing,
+              needsLearningTargetRefresh() else {
+            return
+        }
+        findBetterLearningTargets()
     }
 
     func selectLearningTarget(_ target: LearningTarget) {
