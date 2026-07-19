@@ -159,10 +159,13 @@ final class RepositorySmokeTests: XCTestCase {
     }
 
     func testCoachPromptUsesAdaptiveOutputGuidance() throws {
-        let source = try String(
-            contentsOf: repositoryRoot().appendingPathComponent("Sources/ShadowCoach/ShadowCoachApp.swift"),
-            encoding: .utf8
-        )
+        let sourceDirectory = repositoryRoot().appendingPathComponent("Sources/ShadowCoach")
+        let source = try FileManager.default
+            .contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "swift" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
 
         XCTAssertTrue(source.contains(#"\(outputGuidance)"#))
         XCTAssertTrue(source.contains(#"\(referenceOrigin)"#))
