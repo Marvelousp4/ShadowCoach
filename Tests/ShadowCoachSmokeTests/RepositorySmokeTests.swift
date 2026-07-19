@@ -557,6 +557,51 @@ final class RepositorySmokeTests: XCTestCase {
         XCTAssertTrue(contrast?.note.contains("together") == true)
     }
 
+    func testLearningTargetExtractorFindsProductiveFramesInCurrentMaterial() {
+        let comparison = LearningTargetExtractor.extract(
+            from: "However, the controller was comparing the route target with the robot's own reported position."
+        )
+        XCTAssertTrue(comparison.contains(where: {
+            $0.frame == "[person/system] compare [A] with [B]"
+        }))
+
+        let investigation = LearningTargetExtractor.extract(
+            from: "For that distinction, the next question was simple: what happened to the sensor before the alarm?"
+        )
+        XCTAssertTrue(investigation.contains(where: {
+            $0.text.lowercased() == "what happened to"
+        }))
+
+        let process = LearningTargetExtractor.extract(
+            from: "The scheduling system sent the route one section at a time."
+        )
+        XCTAssertTrue(process.contains(where: {
+            $0.frame == "[one unit] at a time"
+        }))
+    }
+
+    func testLearningTargetMergeKeepsStrongLocalFallbackWhenAIReturnsEmpty() {
+        let local = LearningTargetExtractor.extract(
+            from: "It was simply an intermediate point on the way to the target."
+        )
+        let merged = LearningTargetExtractor.merge(primary: [], fallback: local)
+
+        XCTAssertEqual(merged.first?.text.lowercased(), "on the way to")
+    }
+
+    func testLearningTargetPromptDoesNotPreferAnEmptyResult() {
+        let prompt = LearningTargetPrompt.make(
+            sentence: "The controller compared the target with its reported position.",
+            source: "Test",
+            contextBefore: nil,
+            contextAfter: nil
+        )
+
+        XCTAssertTrue(prompt.contains("Do not default to []"))
+        XCTAssertTrue(prompt.contains("compare A with B"))
+        XCTAssertFalse(prompt.contains("valid and preferred answer"))
+    }
+
     func testLearningTargetAIParserRejectsWeakOrIdentifierBasedFragments() throws {
         let sentence = "LM174 was there, but I had to rule out a mapping issue."
         let raw = """

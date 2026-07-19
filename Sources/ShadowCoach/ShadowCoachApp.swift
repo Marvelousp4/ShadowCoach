@@ -592,6 +592,12 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
         savePracticeStore()
         status = "Sentence loaded. Listen first, then repeat from memory."
+        if useAICoach,
+           feedbackProvider == .codex,
+           currentLearningStage() == .noticing,
+           needsLearningTargetRefresh() {
+            findBetterLearningTargets()
+        }
     }
 
     func restoreLastSelectedLine(from lines: [PracticeLine]) {
@@ -1131,10 +1137,17 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     }
 
     var currentLearningTargets: [LearningTarget] {
-        if let cached = currentProgress().learningPath?.suggestedTargets {
-            return cached
+        let localTargets = LearningTargetExtractor.extract(from: sentence)
+        if let path = currentProgress().learningPath {
+            if path.targetSuggestionRevision == LearningTargetExtractor.selectionRevision,
+               let cached = path.suggestedTargets {
+                return cached
+            }
+            if let cached = path.suggestedTargets, !cached.isEmpty {
+                return LearningTargetExtractor.merge(primary: cached, fallback: localTargets)
+            }
         }
-        return LearningTargetExtractor.extract(from: sentence)
+        return localTargets
     }
 
     var currentLearningTarget: LearningTarget? {
@@ -1163,9 +1176,14 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         status = "Meaning confirmed. Now notice one reusable expression."
         if useAICoach,
            feedbackProvider == .codex,
-           currentProgress().learningPath?.suggestedTargets == nil {
+           needsLearningTargetRefresh() {
             findBetterLearningTargets()
         }
+    }
+
+    private func needsLearningTargetRefresh() -> Bool {
+        currentProgress().learningPath?.targetSuggestionRevision
+            != LearningTargetExtractor.selectionRevision
     }
 
     func selectLearningTarget(_ target: LearningTarget) {
@@ -1200,6 +1218,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         let sentenceSnapshot = sentence
         let sourceSnapshot = selectedLine.map { "\($0.source) · \($0.title)" } ?? "Unknown source"
         let contextSnapshot = neighboringContext(for: selectedLine)
+        let localTargets = LearningTargetExtractor.extract(from: sentenceSnapshot)
         isFindingLearningTargets = true
         status = "Finding genuinely reusable language..."
 
@@ -1225,7 +1244,8 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                         maxOutputTokens: 700
                     )
                 }
-                let targets = try LearningTargetAIParser.parse(raw, sentence: sentenceSnapshot)
+                let aiTargets = try LearningTargetAIParser.parse(raw, sentence: sentenceSnapshot)
+                let targets = LearningTargetExtractor.merge(primary: aiTargets, fallback: localTargets)
                 await MainActor.run {
                     guard self.selectedLineID == selectedLineID else {
                         self.isFindingLearningTargets = false
@@ -1236,6 +1256,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                         path.targetSuggestionModel = provider == .codex
                             ? CodexFeedbackClient.route(for: .learningTargetSelection).model
                             : self.geminiModel
+                        path.targetSuggestionRevision = LearningTargetExtractor.selectionRevision
                         if let selected = path.selectedTarget,
                            !targets.contains(where: { $0.id == selected.id }) {
                             path.selectedTarget = nil
@@ -8348,13 +8369,23 @@ struct ContentView: View {
             let targets = coach.currentLearningTargets
             VStack(alignment: .leading, spacing: 8) {
                 if targets.isEmpty {
-                    Label(
-                        "No high-value standalone target found. This sentence is better practiced as a complete message.",
-                        systemImage: "checkmark.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    if coach.isFindingLearningTargets {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Looking for a reusable pattern...")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Label(
+                            "No useful pattern selected for this line. Whole-sentence practice is still worthwhile.",
+                            systemImage: "checkmark.circle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
                     ForEach(targets) { target in
                         learningTargetRow(target)

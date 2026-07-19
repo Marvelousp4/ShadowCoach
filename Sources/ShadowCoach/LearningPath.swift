@@ -205,6 +205,7 @@ struct LearningPathProgress: Codable, Hashable {
     var selectedTarget: LearningTarget?
     var suggestedTargets: [LearningTarget]?
     var targetSuggestionModel: String?
+    var targetSuggestionRevision: Int?
     var transferContext: TransferContext?
     var realUseReflection: RealUseReflection?
 
@@ -297,6 +298,8 @@ enum LearningPathEngine {
 }
 
 enum LearningTargetExtractor {
+    static let selectionRevision = 2
+
     private struct Rule {
         let pattern: String
         let kind: LearningTargetKind
@@ -329,6 +332,7 @@ enum LearningTargetExtractor {
     }
 
     private static let rules: [Rule] = [
+        Rule(#"\bhave a confession to make\b"#, kind: .fixedExpression, note: "A natural spoken expression for introducing something personal or difficult.", score: 108),
         Rule(#"\bon the way to\b"#, kind: .fixedExpression, frame: "on the way to [place/goal]", note: "A reusable way to describe movement toward a destination.", score: 100),
         Rule(#"\bat the same time\b"#, kind: .discourseMarker, note: "Links two actions or facts that happen together.", score: 98),
         Rule(#"\bas a result\b"#, kind: .discourseMarker, note: "Introduces a consequence clearly.", score: 98),
@@ -340,6 +344,10 @@ enum LearningTargetExtractor {
         Rule(#"\bnot only\b.+\bbut also\b"#, kind: .sentenceFrame, frame: "not only [A], but also [B]", note: "Adds two parallel points with emphasis.", score: 110),
         Rule(#"\bthe more\b.+\bthe more\b"#, kind: .sentenceFrame, frame: "the more [condition], the more [result]", note: "Expresses two changes that move together.", score: 110),
         Rule(#"\b(make|makes|made|making) sure\b"#, kind: .collocation, frame: "make sure (that) [result]", note: "A high-frequency verb pattern for checking or ensuring something.", score: 104),
+        Rule(#"\b(start|starts|started|starting)(?: off)? by\b"#, kind: .sentenceFrame, frame: "start (off) by [action]", note: "A natural way to introduce the first step in an explanation.", score: 104),
+        Rule(#"\b(manage|manages|managed|managing) to\b"#, kind: .collocation, frame: "manage to [action]", note: "Expresses succeeding at something that required effort or was uncertain.", score: 104),
+        Rule(#"\b(feel|feels|felt|feeling) like\b"#, kind: .collocation, frame: "feel like [clause/action]", note: "A common spoken pattern for impressions, emotions, and preferences.", score: 102),
+        Rule(#"\b(am|is|are|was|were|be|been|being) about to\b"#, kind: .collocation, frame: "be about to [action]", note: "Expresses that something is expected to happen very soon.", score: 104),
         Rule(#"\b(take|takes|took|taken|taking) into account\b"#, kind: .collocation, frame: "take [factor] into account", note: "A useful decision-making collocation.", score: 106),
         Rule(#"\b(pay|pays|paid|paying) attention to\b"#, kind: .collocation, frame: "pay attention to [detail]", note: "A common collocation for deliberate focus.", score: 104),
         Rule(#"\b(be|am|is|are|was|were|been|being) able to\b"#, kind: .collocation, frame: "be able to [action]", note: "A reusable way to express practical ability.", score: 90),
@@ -357,16 +365,26 @@ enum LearningTargetExtractor {
         Rule(#"\b(carry|carries|carried|carrying) out\b"#, kind: .phrasalVerb, frame: "carry out [test/plan]", note: "A common professional phrasal verb for executing work.", score: 105),
         Rule(#"\b(set|sets|setting) up\b"#, kind: .phrasalVerb, frame: "set up [system/process]", note: "A common phrasal verb for preparing or arranging something.", score: 103),
         Rule(#"\b(follow|follows|followed|following) up\b"#, kind: .phrasalVerb, frame: "follow up on [issue]", note: "A useful professional phrasal verb for continuing an action.", score: 104),
+        Rule(#"\b(follow|follows|followed|following) through\b"#, kind: .phrasalVerb, frame: "follow through on/with [action]", note: "Describes continuing until a plan or responsibility is completed.", score: 104),
+        Rule(#"\b(stand|stands|stood|standing) out\b"#, kind: .phrasalVerb, frame: "stand out from [group]", note: "A common phrasal verb for something noticeable or distinctive.", score: 105),
+        Rule(#"\bno longer\b"#, kind: .fixedExpression, frame: "no longer [state/action]", note: "A concise way to say that a previous state has ended.", score: 101),
+        Rule(#"\b(close enough to)\b"#, kind: .collocation, frame: "close enough to [target/standard]", note: "A useful pattern for describing whether a requirement is met.", score: 101),
+        Rule(#"\b(?:one|each)\s+[\w'-]+\s+at a time\b"#, kind: .sentenceFrame, frame: "[one unit] at a time", note: "Describes a process handled in separate steps rather than all together.", score: 103),
+        Rule(#"\b(walk|walks|walked|walking)\s+(?:[\w'-]+\s+){0,3}through\b"#, kind: .sentenceFrame, frame: "walk [person] through [process/topic]", note: "A natural professional pattern for explaining something step by step.", score: 106),
+        Rule(#"\bwhat happened to\b"#, kind: .sentenceFrame, frame: "what happened to [person/thing]", note: "A reusable question frame for investigating a change or event.", score: 104),
         Rule(#"\b(work|works|worked|working) on\b"#, kind: .collocation, frame: "work on [task/problem]", note: "A reusable verb-preposition collocation.", score: 88),
         Rule(#"\b(depends?|depended|depending) on\b"#, kind: .collocation, frame: "depend on [condition]", note: "A high-frequency way to express a condition.", score: 101),
         Rule(#"\b(ask|asks|asked|asking)\s+(?:[\w'-]+\s+){1,5}to\b"#, kind: .sentenceFrame, frame: "ask [person] to [action]", note: "A core reporting pattern for requests.", score: 98),
         Rule(#"\b\w+ times? (a|per) (day|week|month|year|night|shift)\b"#, kind: .sentenceFrame, frame: "[number] times a/per [period]", note: "A reusable frequency pattern.", score: 102),
         Rule(#"\bthere (is|are|was|were)\b"#, kind: .sentenceFrame, frame: "there is/are [something]", note: "A core pattern for introducing information.", score: 84),
         Rule(#"\bthat is why\b"#, kind: .discourseMarker, frame: "[cause]. That is why [result].", note: "Links a cause to its result in spoken English.", score: 101),
+        Rule(#"\b(compare|compares|compared|comparing)\b.+\bwith\b.+"#, kind: .sentenceFrame, frame: "[person/system] compare [A] with [B]", note: "A productive frame for explaining how two values or options are checked.", score: 108, capturesWholeSentence: true),
+        Rule(#"\beither\b.+\bor\b.+"#, kind: .sentenceFrame, frame: "Either [possibility A], or [possibility B]", note: "A clear spoken frame for presenting two alternative explanations.", score: 108, capturesWholeSentence: true),
+        Rule(#"\b(move|moves|moved|moving)\s+from\b.+\bto\b.+"#, kind: .sentenceFrame, frame: "[person/process] move from [starting point] to [result]", note: "A useful frame for explaining progress or a change in state.", score: 106, capturesWholeSentence: true),
         Rule(#"\bwhat\b.+\b(is|was)\b.+"#, kind: .sentenceFrame, frame: "What [clause] is/was [focus]", note: "A cleft-style frame that puts the important point at the end.", score: 108, capturesWholeSentence: true),
         Rule(#"\bthe reason\b.+\b(is|was)\b.+"#, kind: .sentenceFrame, frame: "The reason [clause] is/was [explanation]", note: "A clear frame for explaining cause.", score: 108, capturesWholeSentence: true),
         Rule(#"\bif\b.+\bthen\b.+"#, kind: .sentenceFrame, frame: "If [condition], then [result]", note: "Makes a condition and consequence explicit.", score: 106, capturesWholeSentence: true),
-        Rule(#"\b.+\bbut\b.+"#, kind: .sentenceFrame, frame: "[claim], but [contrast/evidence]", note: "A reusable contrast frame when both sides form a meaningful pattern.", score: 90, capturesWholeSentence: true)
+        Rule(#"\b.+\bbut\b.+"#, kind: .sentenceFrame, frame: "[claim], but [contrast/evidence]", note: "A reusable contrast frame when both sides form a meaningful pattern.", score: 97, capturesWholeSentence: true)
     ]
 
     static func extract(from sentence: String, limit: Int = 3) -> [LearningTarget] {
@@ -418,6 +436,25 @@ enum LearningTargetExtractor {
         return result
     }
 
+    static func merge(
+        primary: [LearningTarget],
+        fallback: [LearningTarget],
+        limit: Int = 3
+    ) -> [LearningTarget] {
+        guard limit > 0 else { return [] }
+        var result: [LearningTarget] = []
+        for target in primary + fallback {
+            guard !result.contains(where: { existing in
+                existing.id == target.id
+                    || existing.text.localizedCaseInsensitiveContains(target.text)
+                    || target.text.localizedCaseInsensitiveContains(existing.text)
+            }) else { continue }
+            result.append(target)
+            if result.count == limit { break }
+        }
+        return result
+    }
+
     private static func candidateOrder(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
         if lhs.range.length != rhs.range.length { return lhs.range.length < rhs.range.length }
@@ -440,7 +477,7 @@ enum LearningTargetPrompt {
         Previous sentence: \(contextBefore ?? "not available")
         Next sentence: \(contextAfter ?? "not available")
 
-        Return a JSON array with 0 to 3 items. Zero is a valid and preferred answer when this sentence has nothing worth isolating.
+        Return a JSON array with 0 to 3 items. Prefer one excellent target over several weak ones. Return zero only when the sentence is a short plain fact with no transferable construction or conventional word combination.
 
         A valuable target must be one of these:
         - sentenceFrame: a productive grammatical frame with replaceable slots
@@ -453,10 +490,12 @@ enum LearningTargetPrompt {
         - Never select an arbitrary contiguous fragment merely because it contains several content words.
         - Never select names, IDs, isolated technical nouns, raw numbers, or topic-specific noun phrases unless they form a broadly reusable collocation.
         - Do not return a generic subject + verb fragment such as "different robots stopped".
-        - Do not return transparent beginner combinations such as "be able to", "work on", or "there is" unless the larger construction teaches a non-obvious pattern.
+        - Do not return transparent beginner combinations such as "be able to", "work on", or "there is" unless the larger construction teaches a non-obvious relationship.
         - A sentence frame must contain replaceable slots and preserve a meaningful grammatical or logical relationship. Generic labels such as "[subject] + [verb]" are invalid.
-        - Prefer one excellent target over three mediocre targets. Return [] when none would deserve deliberate review.
+        - Familiar language can still be valuable when it forms a productive relationship such as compare A with B, either A or B, what happened to A before B, or move from A to B.
+        - Do not default to [] merely because the wording is common. Return [] only when nothing in the sentence deserves deliberate reuse.
         - `text` must be an exact contiguous substring of the sentence, preserving the original words.
+        - `text` is the evidence quote, not the generalized pattern. Never put placeholders such as A, B, or [cause] in `text`; placeholders belong only in `frame`.
         - Prefer 2-6 words for expressions. A sentenceFrame may use a longer exact span only when the whole construction is genuinely reusable.
         - `frame` should replace changeable content with clear slots such as `[cause]`, `[person]`, or `[result]`. Use null when no frame helps.
         - `note` must give one concrete reason this target transfers to other situations. Keep it under 18 English words.
@@ -472,6 +511,14 @@ enum LearningTargetPrompt {
             "note": "why it is reusable"
           }
         ]
+
+        Positive example:
+        Sentence: "The controller was comparing the target with its reported position."
+        [{"text":"The controller was comparing the target with its reported position","kind":"sentenceFrame","frame":"[person/system] compare [A] with [B]","note":"Useful for explaining how two values or options are checked."}]
+
+        Negative example:
+        Sentence: "The robot is LM174."
+        []
         """
     }
 }
