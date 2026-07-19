@@ -1,6 +1,6 @@
 # Clean-Room Testing
 
-`scripts/clean-room-smoke.sh` verifies the dependency-free contributor path from a fresh local clone and an isolated HOME:
+`scripts/clean-room-smoke.sh` verifies the dependency-free contributor path from a fresh local clone and an isolated HOME. It is intentionally reserved for formal `v*` release tags rather than every small push:
 
 ```bash
 ./scripts/clean-room-smoke.sh

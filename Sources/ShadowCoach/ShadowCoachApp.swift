@@ -388,6 +388,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
     @Published private(set) var isReviewChineseHintVisible = false
     @Published private(set) var reviewSessionPosition = 0
     @Published private(set) var reviewSessionTotal = 0
+    @Published private(set) var activeRecordingActivity: PracticeActivity = .shadowing
     @Published var selectedAttemptRelativePathForAnalysis: String?
     @Published var phraseTranslation = ""
     @Published var isTranslatingPhrase = false
@@ -449,21 +450,30 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
 
     var analysisRecordingURL: URL? {
         if let selectedAttemptRelativePathForAnalysis {
+            guard attempt(forRelativePath: selectedAttemptRelativePathForAnalysis)?.resolvedActivity.comparesWithReference == true else {
+                return nil
+            }
             let url = appSupportDirectory.appendingPathComponent(selectedAttemptRelativePathForAnalysis)
             if isUsableRecording(at: url) {
                 return url
             }
+            return nil
         }
-        for attempt in currentProgress().attempts {
+        for attempt in currentProgress().attempts where attempt.resolvedActivity.comparesWithReference {
             let url = appSupportDirectory.appendingPathComponent(attempt.relativePath)
             if isUsableRecording(at: url) {
                 return url
             }
         }
-        if isUsableRecording(at: recordingURL) {
+        if activeRecordingActivity.comparesWithReference, isUsableRecording(at: recordingURL) {
             return recordingURL
         }
         return nil
+    }
+
+    var selectedAttemptActivity: PracticeActivity? {
+        guard let selectedAttemptRelativePathForAnalysis else { return nil }
+        return attempt(forRelativePath: selectedAttemptRelativePathForAnalysis)?.resolvedActivity
     }
 
     var libraryURL: URL {
@@ -547,6 +557,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         sentenceTranslation = ""
         sentenceTranslationRequestID = UUID()
         clearPhraseLookup()
+        activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
         savePracticeStore()
         status = "Sentence loaded. Listen first, then repeat from memory."
     }
@@ -941,11 +952,13 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         isRecording ? stopRecording(autoAnalyze: autoAnalyzeAfterRecording) : startRecording()
     }
 
-    func startRecording() {
+    func startRecording(activity: PracticeActivity? = nil) {
         stopPlayback()
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking()
         }
+        activeRecordingActivity = activity
+            ?? LearningPathEngine.recordingActivity(for: currentLearningStage())
         selectedAttemptRelativePathForAnalysis = nil
         analysis = ""
         recordingAnalysis = nil
@@ -979,7 +992,8 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         hasRecording = isUsableRecording(at: recordingURL, minimumDuration: 0.25)
         if hasRecording {
             let referenceDuration = sourceReferenceDuration(for: selectedLine)
-            if requireFullReferenceLength && RecordingLengthPolicy.shouldDiscard(
+            if activeRecordingActivity.comparesWithReference,
+               requireFullReferenceLength && RecordingLengthPolicy.shouldDiscard(
                 recordingDuration: recordingDuration,
                 referenceDuration: referenceDuration
             ), let referenceDuration {
@@ -1002,12 +1016,14 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 )
                 return
             }
-            saveRecordingAttempt()
-            if autoAnalyze {
+            let savedActivity = activeRecordingActivity
+            saveRecordingAttempt(activity: savedActivity)
+            if autoAnalyze && savedActivity.comparesWithReference {
                 analyzeRecording()
             } else {
-                status = "Recording saved"
+                status = "\(savedActivity.label) recording saved"
             }
+            activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
         } else {
             try? FileManager.default.removeItem(at: recordingURL)
             status = "Recording too short. Try again."
@@ -1064,6 +1080,132 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
 
     func progress(for line: PracticeLine) -> PracticeProgress {
         practiceStore.progress[line.id] ?? PracticeProgress()
+    }
+
+    func currentLearningStage() -> LearningPathStage? {
+        LearningPathEngine.nextStage(for: currentProgress())
+    }
+
+    func isCurrentLearningStageComplete(_ stage: LearningPathStage) -> Bool {
+        LearningPathEngine.isComplete(stage, progress: currentProgress())
+    }
+
+    var currentLearningCompletedCount: Int {
+        LearningPathEngine.completedCount(for: currentProgress())
+    }
+
+    var currentLearningChunks: [String] {
+        LearningChunkExtractor.extract(from: sentence)
+    }
+
+    var currentLearningChunk: String? {
+        let stored = currentProgress().learningPath?.selectedChunk
+        return stored ?? currentLearningChunks.first
+    }
+
+    var currentTransferContext: TransferContext {
+        currentProgress().learningPath?.transferContext ?? .work
+    }
+
+    func completeInputUnderstanding() {
+        markCurrentLearningStage(.input)
+        isSentenceVisible = true
+        status = "Meaning confirmed. Now notice one reusable expression."
+    }
+
+    func selectLearningChunk(_ chunk: String) {
+        updateCurrentLearningPath { path in
+            path.selectedChunk = chunk
+        }
+        status = "Selected \"\(chunk)\""
+    }
+
+    func completeNoticing(with chunk: String) {
+        updateCurrentLearningPath { path in
+            path.selectedChunk = chunk
+            path.mark(.noticing)
+        }
+        activeRecordingActivity = .shadowing
+        status = "Expression saved. Listen again and copy the speaker's delivery."
+    }
+
+    func setTransferContext(_ context: TransferContext) {
+        updateCurrentLearningPath { path in
+            path.transferContext = context
+        }
+    }
+
+    func beginImmediateRecall() {
+        guard let line = selectedLine else {
+            status = "Select a sentence first"
+            return
+        }
+        reviewSessionLineIDs = [line.id]
+        reviewSessionPosition = 0
+        reviewSessionTotal = 1
+        isReviewSessionActive = true
+        prepareReviewPrompt()
+        status = "Recall it from context before revealing the answer."
+    }
+
+    func markRealCommunicationComplete() {
+        markCurrentLearningStage(.realCommunication)
+        status = "Real use saved. Finish the loop with feedback and one corrected retry."
+    }
+
+    var feedbackCorrectionActionTitle: String {
+        guard let attempt = latestComparableAttempt() else { return "Record a retry" }
+        if attempt.analysisCache == nil { return "Analyze attempt" }
+        if attempt.analysisCache?.localAnalysis.isPerfectWordRecall == true { return "Finish" }
+        if attempt.resolvedActivity == .correction { return "Finish" }
+        return "Record corrected retry"
+    }
+
+    func performFeedbackCorrectionAction() {
+        guard let attempt = latestComparableAttempt() else {
+            startRecording(activity: .correction)
+            return
+        }
+        if attempt.analysisCache == nil {
+            selectedAttemptRelativePathForAnalysis = attempt.relativePath
+            analyzeRecording()
+            return
+        }
+        if attempt.analysisCache?.localAnalysis.isPerfectWordRecall == true
+            || attempt.resolvedActivity == .correction {
+            markCurrentLearningStage(.feedbackCorrection)
+            status = "Learning loop complete. Future reviews stay in the FSRS queue."
+            return
+        }
+        startRecording(activity: .correction)
+    }
+
+    private func markCurrentLearningStage(_ stage: LearningPathStage) {
+        updateCurrentLearningPath { path in
+            path.mark(stage)
+        }
+        activeRecordingActivity = LearningPathEngine.recordingActivity(for: currentLearningStage())
+    }
+
+    private func updateCurrentLearningPath(_ update: (inout LearningPathProgress) -> Void) {
+        guard let selectedLineID else { return }
+        var progress = practiceStore.progress[selectedLineID] ?? PracticeProgress()
+        var path = progress.learningPath ?? LearningPathProgress()
+        update(&path)
+        progress.learningPath = path
+        practiceStore.progress[selectedLineID] = progress
+        savePracticeStore()
+    }
+
+    private func latestComparableAttempt() -> RecordingAttempt? {
+        currentProgress().attempts.first { $0.resolvedActivity.comparesWithReference }
+    }
+
+    private func attempt(forRelativePath relativePath: String) -> RecordingAttempt? {
+        practiceStore.progress.values
+            .lazy
+            .flatMap(\.attempts)
+            .first { $0.relativePath == relativePath }
     }
 
     func allAttempts() -> [RecordingAttempt] {
@@ -1188,6 +1330,10 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             review.history.removeFirst(review.history.count - 1_000)
         }
         progress.review = review
+        var learningPath = progress.learningPath ?? LearningPathProgress()
+        learningPath.mark(.retrieval, at: date)
+        learningPath.mark(.spacedReview, at: date)
+        progress.learningPath = learningPath
         practiceStore.progress[selectedLineID] = progress
         savePracticeStore()
 
@@ -1293,7 +1439,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 recordingAnalysis = nil
                 analysis = ""
                 resetCoachConversation()
-                status = "Playing saved attempt"
+                status = attempt.resolvedActivity.comparesWithReference
+                    ? "Playing saved attempt"
+                    : "Playing \(attempt.resolvedActivity.label.lowercased()) response"
             }
         } catch {
             status = "Could not play saved recording: \(error.localizedDescription)"
@@ -1320,7 +1468,9 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
             recordingAnalysis = nil
             analysis = ""
             resetCoachConversation()
-            status = "Selected saved attempt"
+            status = attempt.resolvedActivity.comparesWithReference
+                ? "Selected saved attempt"
+                : "Selected \(attempt.resolvedActivity.label.lowercased()). Exact comparison is off for open responses."
         }
     }
 
@@ -1347,7 +1497,7 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         status = "Deleted saved attempt"
     }
 
-    private func saveRecordingAttempt() {
+    private func saveRecordingAttempt(activity: PracticeActivity) {
         guard let selectedLineID else { return }
         guard isUsableRecording(at: recordingURL, minimumDuration: 0.25) else {
             status = "Recording too short. Try again."
@@ -1366,12 +1516,25 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
                 id: UUID(),
                 date: Date(),
                 duration: recordingDuration,
-                relativePath: relativePath
+                relativePath: relativePath,
+                activity: activity
             )
             var progress = practiceStore.progress[selectedLineID] ?? PracticeProgress()
             progress.practiceCount += 1
             progress.lastPracticedAt = Date()
             progress.attempts.insert(attempt, at: 0)
+            var learningPath = progress.learningPath ?? LearningPathProgress()
+            switch activity {
+            case .shadowing:
+                learningPath.mark(.shadowing)
+            case .transformation:
+                learningPath.mark(.transformation)
+            case .freeExpression:
+                learningPath.mark(.freeExpression)
+            case .correction:
+                break
+            }
+            progress.learningPath = learningPath
             if progress.review == nil {
                 progress.review = SentenceReviewProgress()
             }
@@ -1472,6 +1635,12 @@ final class SpeechCoach: NSObject, ObservableObject, AVAudioRecorderDelegate, AV
         }
 
         progress.attempts[location.attemptIndex].analysisCache = cache
+        let analyzedAttempt = progress.attempts[location.attemptIndex]
+        if analyzedAttempt.resolvedActivity == .correction || cache.localAnalysis.isPerfectWordRecall {
+            var learningPath = progress.learningPath ?? LearningPathProgress()
+            learningPath.mark(.feedbackCorrection)
+            progress.learningPath = learningPath
+        }
         practiceStore.progress[location.lineID] = progress
         savePracticeStore()
     }
@@ -3005,6 +3174,7 @@ struct PracticeProgress: Codable {
     var lastPracticedAt: Date?
     var attempts: [RecordingAttempt] = []
     var review: SentenceReviewProgress? = nil
+    var learningPath: LearningPathProgress? = nil
 }
 
 struct RecordingAttempt: Identifiable, Codable, Hashable {
@@ -3012,7 +3182,12 @@ struct RecordingAttempt: Identifiable, Codable, Hashable {
     let date: Date
     let duration: Double
     let relativePath: String
+    var activity: PracticeActivity? = nil
     var analysisCache: RecordingAnalysisCache? = nil
+
+    var resolvedActivity: PracticeActivity {
+        activity ?? .shadowing
+    }
 }
 
 struct CoachConversationMessage: Identifiable, Codable, Hashable {
@@ -7242,7 +7417,11 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(coach.isReviewSessionActive ? "Review" : "Practice")
                         .font(.system(size: 28, weight: .semibold, design: .rounded))
-                    Text(coach.isReviewSessionActive ? coach.reviewSessionProgressText : "Listen. Repeat. Review.")
+                    Text(
+                        coach.isReviewSessionActive
+                            ? coach.reviewSessionProgressText
+                            : (coach.currentLearningStage()?.title ?? "Learning path complete")
+                    )
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -7278,6 +7457,10 @@ struct ContentView: View {
                 }
             }
 
+            if !coach.isReviewSessionActive {
+                learningCoachCard
+            }
+
             sentenceStage
 
             if coach.isReviewSessionActive && coach.isReviewAnswerRevealed {
@@ -7293,6 +7476,280 @@ struct ContentView: View {
             Spacer()
         }
         .padding(2)
+    }
+
+    private var learningCoachCard: some View {
+        let stage = coach.currentLearningStage()
+        let completed = coach.currentLearningCompletedCount
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(Theme.accent.opacity(0.12))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: stage?.systemImage ?? "checkmark.seal.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(stage == nil ? Theme.success : Theme.accent)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(stage == nil ? "Path complete" : "Next Coach")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(stage?.title ?? "Keep it alive through scheduled review")
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
+
+                Spacer()
+
+                Text("\(completed)/\(LearningPathStage.allCases.count)")
+                    .font(.caption.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(stage == nil ? Theme.success : Theme.accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background((stage == nil ? Theme.success : Theme.accent).opacity(0.10))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+
+            learningPathProgressStrip(activeStage: stage)
+
+            if let stage {
+                Text(learningInstruction(for: stage))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                learningStageOptions(stage)
+
+                Button {
+                    performLearningAction(stage)
+                } label: {
+                    Label(learningActionTitle(for: stage), systemImage: learningActionIcon(for: stage))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryButtonStyle(color: learningActionColor(for: stage)))
+                .disabled(learningActionDisabled(for: stage))
+            } else {
+                Text("This sentence now stays in your FSRS review queue. Reuse the saved chunk whenever a matching situation appears.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .background(Theme.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Theme.border)
+        )
+    }
+
+    private func learningPathProgressStrip(activeStage: LearningPathStage?) -> some View {
+        HStack(spacing: 6) {
+            ForEach(Array(LearningPathStage.allCases.enumerated()), id: \.element.id) { index, stage in
+                let isComplete = coach.isCurrentLearningStageComplete(stage)
+                let isActive = activeStage == stage
+                ZStack {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(
+                            isComplete
+                                ? Theme.success.opacity(0.16)
+                                : (isActive ? Theme.accent.opacity(0.16) : Theme.pill)
+                        )
+                    Image(systemName: isComplete ? "checkmark" : stage.systemImage)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(isComplete ? Theme.success : (isActive ? Theme.accent : Color.secondary))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 24)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(isActive ? Theme.accent.opacity(0.45) : Color.clear)
+                )
+                .help("\(index + 1). \(stage.title)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func learningStageOptions(_ stage: LearningPathStage) -> some View {
+        switch stage {
+        case .noticing:
+            let chunks = coach.currentLearningChunks
+            if chunks.isEmpty {
+                Text("No reusable chunk was found. You can still continue with the whole short sentence.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                TokenFlowLayout(spacing: 7, rowSpacing: 7) {
+                    ForEach(chunks, id: \.self) { chunk in
+                        let selected = coach.currentLearningChunk == chunk
+                        Button {
+                            coach.selectLearningChunk(chunk)
+                        } label: {
+                            Text(chunk)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(selected ? Theme.accent : Color.primary)
+                        .background(selected ? Theme.accent.opacity(0.12) : Theme.pill)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(selected ? Theme.accent.opacity(0.4) : Theme.border)
+                        )
+                    }
+                }
+            }
+
+        case .transformation:
+            VStack(alignment: .leading, spacing: 8) {
+                learningChunkCallout
+                Picker(
+                    "New situation",
+                    selection: Binding(
+                        get: { coach.currentTransferContext },
+                        set: { coach.setTransferContext($0) }
+                    )
+                ) {
+                    ForEach(TransferContext.allCases) { context in
+                        Text(context.label).tag(context)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+        case .freeExpression, .realCommunication:
+            learningChunkCallout
+
+        default:
+            EmptyView()
+        }
+    }
+
+    private var learningChunkCallout: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "quote.opening")
+                .foregroundStyle(Theme.accent)
+            Text(coach.currentLearningChunk ?? coach.sentence)
+                .font(.callout.weight(.semibold))
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Theme.accent.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func learningInstruction(for stage: LearningPathStage) -> String {
+        let chunk = coach.currentLearningChunk ?? "the key expression"
+        switch stage {
+        case .input:
+            return "Listen for the situation and meaning first. Reveal or translate only when needed, then confirm that the line makes sense to you."
+        case .noticing:
+            return "Choose one reusable chunk. Listen again for its stress, reductions, and how its words connect instead of memorizing isolated words."
+        case .shadowing:
+            return "Copy the speaker's timing and phrasing, not just the words. Listen once, then record the full line from memory."
+        case .retrieval:
+            return "Recall the line from its English context with the answer hidden. Chinese is available only as a rescue hint."
+        case .spacedReview:
+            return "Rate the recall honestly. FSRS will choose the next interval from your result."
+        case .transformation:
+            return "Keep \"\(chunk)\", but change the people, time, and details. Say one new sentence about \(coach.currentTransferContext.prompt)."
+        case .freeExpression:
+            return "Speak for 30-60 seconds about a related experience or opinion. Use \"\(chunk)\" naturally, without copying the original sentence."
+        case .realCommunication:
+            return "Use \"\(chunk)\" once in a real meeting, conversation, or voice message. Come back only after you have actually used it."
+        case .feedbackCorrection:
+            return "Analyze an exact attempt, apply the most important feedback, then record one corrected retry. Optional Azure, prosody, and AI coaching stay under your settings."
+        }
+    }
+
+    private func learningActionTitle(for stage: LearningPathStage) -> String {
+        switch stage {
+        case .input: return "I understand this line"
+        case .noticing: return "Keep this chunk"
+        case .shadowing: return "Listen, then shadow"
+        case .retrieval, .spacedReview: return "Recall without prompt"
+        case .transformation: return coach.isRecording ? "Stop recording" : "Record new sentence"
+        case .freeExpression: return coach.isRecording ? "Stop recording" : "Start free speaking"
+        case .realCommunication: return "I used it for real"
+        case .feedbackCorrection: return coach.isRecording ? "Stop recording" : coach.feedbackCorrectionActionTitle
+        }
+    }
+
+    private func learningActionIcon(for stage: LearningPathStage) -> String {
+        if coach.isRecording, [.transformation, .freeExpression, .feedbackCorrection].contains(stage) {
+            return "stop.fill"
+        }
+        switch stage {
+        case .input: return "checkmark"
+        case .noticing: return "scope"
+        case .shadowing: return "speaker.wave.2.fill"
+        case .retrieval, .spacedReview: return "brain.head.profile"
+        case .transformation, .freeExpression: return "mic.fill"
+        case .realCommunication: return "checkmark.message.fill"
+        case .feedbackCorrection:
+            return coach.feedbackCorrectionActionTitle.contains("Analyze")
+                ? "waveform.badge.magnifyingglass"
+                : "arrow.triangle.2.circlepath"
+        }
+    }
+
+    private func learningActionColor(for stage: LearningPathStage) -> Color {
+        if coach.isRecording { return Theme.danger }
+        switch stage {
+        case .realCommunication: return Theme.success
+        case .feedbackCorrection: return Theme.accent
+        default: return Theme.primary
+        }
+    }
+
+    private func learningActionDisabled(for stage: LearningPathStage) -> Bool {
+        if coach.selectedLineID == nil { return true }
+        if stage == .noticing { return coach.currentLearningChunk == nil }
+        if stage == .feedbackCorrection { return coach.isAnalyzing }
+        return false
+    }
+
+    private func performLearningAction(_ stage: LearningPathStage) {
+        switch stage {
+        case .input:
+            coach.completeInputUnderstanding()
+        case .noticing:
+            if let chunk = coach.currentLearningChunk {
+                coach.completeNoticing(with: chunk)
+            }
+        case .shadowing:
+            coach.speakSentence()
+        case .retrieval, .spacedReview:
+            coach.beginImmediateRecall()
+        case .transformation:
+            coach.isRecording
+                ? coach.stopRecording(autoAnalyze: false)
+                : coach.startRecording(activity: .transformation)
+        case .freeExpression:
+            coach.isRecording
+                ? coach.stopRecording(autoAnalyze: false)
+                : coach.startRecording(activity: .freeExpression)
+        case .realCommunication:
+            coach.markRealCommunicationComplete()
+        case .feedbackCorrection:
+            if coach.isRecording {
+                coach.stopRecording(autoAnalyze: false)
+            } else {
+                coach.performFeedbackCorrectionAction()
+            }
+        }
     }
 
     private var sentenceStage: some View {
@@ -7554,13 +8011,28 @@ struct ContentView: View {
                 actionButton(icon: "speaker.wave.2.fill", title: "Listen", shortcut: "↑", color: Theme.primary, compact: compact) {
                     coach.speakSentence()
                 }
-                actionButton(icon: coach.isRecording ? "stop.fill" : "mic.fill", title: coach.isRecording ? "Stop" : "Record", shortcut: "Space", color: coach.isRecording ? Theme.danger : Theme.success, compact: compact) {
+                actionButton(
+                    icon: coach.isRecording ? "stop.fill" : "mic.fill",
+                    title: coach.isRecording ? "Stop" : guidedRecordTitle,
+                    shortcut: "Space",
+                    color: coach.isRecording ? Theme.danger : Theme.success,
+                    compact: compact
+                ) {
                     coach.toggleRecording()
                 }
                 actionButton(icon: "chevron.right", title: "Next", shortcut: "→", color: .gray, compact: compact) {
                     coach.chooseNext(in: currentGroupLines)
                 }
             }
+        }
+    }
+
+    private var guidedRecordTitle: String {
+        switch coach.currentLearningStage() {
+        case .transformation: return "Transform"
+        case .freeExpression: return "Free Speak"
+        case .feedbackCorrection: return "Retry"
+        default: return "Record"
         }
     }
 
@@ -7809,7 +8281,7 @@ struct ContentView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Text("\(formatAttemptDuration(attempt.duration)) · \(attempt.analysisCache == nil ? "Not analyzed" : "Analysis saved")")
+                        Text(attemptDetail(attempt))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -7881,6 +8353,16 @@ struct ContentView: View {
         }
     }
 
+    private func attemptDetail(_ attempt: RecordingAttempt) -> String {
+        let analysisState: String
+        if attempt.resolvedActivity.comparesWithReference {
+            analysisState = attempt.analysisCache == nil ? "Not analyzed" : "Analysis saved"
+        } else {
+            analysisState = "Open response"
+        }
+        return "\(formatAttemptDuration(attempt.duration)) · \(attempt.resolvedActivity.label) · \(analysisState)"
+    }
+
     private var progressSummary: String {
         if coach.isRecording {
             return "Speak clearly, then press Space to stop"
@@ -7894,7 +8376,7 @@ struct ContentView: View {
 
     private var recordingTitle: String {
         if coach.isRecording {
-            return "Recording..."
+            return "Recording \(coach.activeRecordingActivity.label)..."
         }
         if coach.hasRecording {
             return "Recording Ready"
@@ -8014,15 +8496,13 @@ struct ContentView: View {
 
                 if coach.analysis.isEmpty && coach.recordingAnalysis == nil {
                     VStack(spacing: 14) {
-                        Image(systemName: coach.analysisRecordingURL == nil ? "mic" : "waveform.badge.magnifyingglass")
+                        Image(systemName: feedbackEmptyIcon)
                             .font(.system(size: 38))
                             .foregroundStyle(Theme.accent.opacity(0.55))
-                        Text(coach.analysisRecordingURL == nil ? "Record a sentence first" : "Ready to analyze")
+                        Text(feedbackEmptyTitle)
                             .font(scaledFeedbackFont(15, scale: feedbackTextSize.scale, weight: .semibold))
                             .foregroundStyle(.secondary)
-                        Text(coach.analysisRecordingURL == nil
-                             ? "Listen, record your answer, then come back here."
-                             : "Word comparison is local. Optional services run only when enabled.")
+                        Text(feedbackEmptyMessage)
                             .font(scaledFeedbackFont(12, scale: feedbackTextSize.scale))
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -8047,6 +8527,30 @@ struct ContentView: View {
             .padding(2)
         }
         .environment(\.feedbackTextScale, feedbackTextSize.scale)
+    }
+
+    private var selectedOpenResponseActivity: PracticeActivity? {
+        guard let activity = coach.selectedAttemptActivity, !activity.comparesWithReference else { return nil }
+        return activity
+    }
+
+    private var feedbackEmptyIcon: String {
+        if selectedOpenResponseActivity != nil { return "quote.bubble" }
+        return coach.analysisRecordingURL == nil ? "mic" : "waveform.badge.magnifyingglass"
+    }
+
+    private var feedbackEmptyTitle: String {
+        if let activity = selectedOpenResponseActivity { return "\(activity.label) saved" }
+        return coach.analysisRecordingURL == nil ? "Record a sentence first" : "Ready to analyze"
+    }
+
+    private var feedbackEmptyMessage: String {
+        if selectedOpenResponseActivity != nil {
+            return "This is an open response, so it is not scored as an incorrect copy of the reference. Play it from Saved Attempts and continue the learning path."
+        }
+        return coach.analysisRecordingURL == nil
+            ? "Listen, record your answer, then come back here."
+            : "Word comparison is local. Optional services run only when enabled."
     }
 
     private var codexFollowUpPanel: some View {

@@ -20,12 +20,19 @@ Shadow Coach is a local-first macOS and iPhone practice app. Listen without seei
 
 ## Practice Flow
 
-1. Import a transcript, media with subtitles, or a supported URL.
-2. Listen to one sentence with the text hidden.
-3. Repeat and record from memory.
-4. Analyze when you are ready.
-5. Fix the most important word, sound, or rhythm issue and try again.
-6. Recall practiced lines later from English context with the adaptive review queue.
+The compact **Next Coach** card advances one sentence through a complete learning loop without exposing nine separate modes:
+
+1. Understand authentic input from its situation and meaning.
+2. Notice one reusable chunk plus its stress, reductions, and connections.
+3. Shadow the speaker's timing and phrasing.
+4. Retrieve the line aloud without seeing it.
+5. Schedule later retrieval with local FSRS-6.
+6. Reuse the chunk in a different situation.
+7. Speak freely about a related experience or opinion.
+8. Use the chunk in a real conversation, meeting, or voice message.
+9. Analyze an exact attempt, apply feedback, and record a corrected retry.
+
+Open-response recordings are saved in history but are never scored as incorrect copies of the reference. See [Learning path](docs/learning-path.md) for the completion rules.
 
 ## Features
 
@@ -79,13 +86,14 @@ Build the app bundle:
 open "build/Shadow Coach.app"
 ```
 
-Run checks:
+Run regular development checks:
 
 ```bash
 ./scripts/doctor.sh
 swift test
-./scripts/clean-room-smoke.sh
 ```
+
+The slower `./scripts/clean-room-smoke.sh` contributor-install check is reserved for formal `v*` releases.
 
 Open the iPhone companion:
 

@@ -333,6 +333,137 @@ final class RepositorySmokeTests: XCTestCase {
 
         XCTAssertEqual(progress.practiceCount, 2)
         XCTAssertNil(progress.review)
+        XCTAssertNil(progress.learningPath)
+    }
+
+    func testLegacyRecordingAttemptDefaultsToShadowing() throws {
+        let attempt = RecordingAttempt(
+            id: UUID(),
+            date: Date(timeIntervalSince1970: 1_700_000_000),
+            duration: 4.2,
+            relativePath: "Recordings/example.m4a"
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(attempt)) as? [String: Any]
+        )
+        object.removeValue(forKey: "activity")
+
+        let decoded = try JSONDecoder().decode(
+            RecordingAttempt.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        XCTAssertEqual(decoded.resolvedActivity, .shadowing)
+        XCTAssertTrue(decoded.resolvedActivity.comparesWithReference)
+    }
+
+    func testOpenResponseRecordingsDoNotUseReferenceComparison() {
+        XCTAssertFalse(PracticeActivity.transformation.comparesWithReference)
+        XCTAssertFalse(PracticeActivity.freeExpression.comparesWithReference)
+        XCTAssertTrue(PracticeActivity.shadowing.comparesWithReference)
+        XCTAssertTrue(PracticeActivity.correction.comparesWithReference)
+    }
+
+    func testSelectingOpenResponseDoesNotFallBackToAnotherAttemptForAnalysis() {
+        let lineID = UUID()
+        let openResponse = RecordingAttempt(
+            id: UUID(),
+            date: Date(),
+            duration: 20,
+            relativePath: "Recordings/open-response.m4a",
+            activity: .freeExpression
+        )
+        let shadowing = RecordingAttempt(
+            id: UUID(),
+            date: Date().addingTimeInterval(-60),
+            duration: 5,
+            relativePath: "Recordings/shadowing.m4a",
+            activity: .shadowing
+        )
+        let coach = SpeechCoach()
+        coach.selectedLineID = lineID
+        coach.practiceStore.progress[lineID] = PracticeProgress(attempts: [openResponse, shadowing])
+        coach.selectedAttemptRelativePathForAnalysis = openResponse.relativePath
+
+        XCTAssertNil(coach.analysisRecordingURL)
+        XCTAssertEqual(coach.selectedAttemptActivity, .freeExpression)
+    }
+
+    func testLearningPathAdvancesThroughRealUseAndCorrection() {
+        var progress = PracticeProgress()
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .input)
+
+        var path = LearningPathProgress()
+        path.mark(.input)
+        progress.learningPath = path
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .noticing)
+
+        path.mark(.noticing)
+        progress.learningPath = path
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .shadowing)
+
+        progress.attempts = [
+            RecordingAttempt(
+                id: UUID(),
+                date: Date(),
+                duration: 5,
+                relativePath: "Recordings/shadow.m4a",
+                activity: .shadowing
+            )
+        ]
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .retrieval)
+
+        let event = ReviewEvent(
+            reviewedAt: Date(),
+            rating: .good,
+            elapsedDays: 0,
+            scheduledInterval: 600
+        )
+        progress.review = SentenceReviewProgress(history: [event])
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .transformation)
+
+        progress.attempts.insert(
+            RecordingAttempt(
+                id: UUID(),
+                date: Date(),
+                duration: 8,
+                relativePath: "Recordings/transform.m4a",
+                activity: .transformation
+            ),
+            at: 0
+        )
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .freeExpression)
+
+        progress.attempts.insert(
+            RecordingAttempt(
+                id: UUID(),
+                date: Date(),
+                duration: 35,
+                relativePath: "Recordings/free.m4a",
+                activity: .freeExpression
+            ),
+            at: 0
+        )
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .realCommunication)
+
+        path = progress.learningPath ?? LearningPathProgress()
+        path.mark(.realCommunication)
+        progress.learningPath = path
+        XCTAssertEqual(LearningPathEngine.nextStage(for: progress), .feedbackCorrection)
+
+        path.mark(.feedbackCorrection)
+        progress.learningPath = path
+        XCTAssertNil(LearningPathEngine.nextStage(for: progress))
+        XCTAssertEqual(LearningPathEngine.completedCount(for: progress), 9)
+    }
+
+    func testChunkExtractorFindsReusableExpression() {
+        let chunks = LearningChunkExtractor.extract(
+            from: "The robot was on the way to the target when the position check failed."
+        )
+
+        XCTAssertTrue(chunks.contains("on the way to"))
+        XCTAssertLessThanOrEqual(chunks.count, 3)
+        XCTAssertEqual(Set(chunks).count, chunks.count)
     }
 
     private func repositoryRoot() -> URL {
